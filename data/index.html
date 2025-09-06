@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Station Météo ESP32</title>
+  <!-- Bootstrap CSS depuis un CDN -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+
+  <div class="container py-5">
+    <h1 class="text-center mb-4">🌤️ Station Météo ESP32</h1>
+    
+    <div class="card shadow p-4">
+      <h2 class="h5">Données en direct</h2>
+      <p><strong>Date et heure :</strong> <span id="datetime">25</span></p>
+      <p><strong>Température DHT22 :</strong> <span id="temp">25</span> °C</p>
+      <p><strong>Humidité :</strong> <span id="hum">40</span> %</p>
+      <p><strong>Température BMP280 :</strong> <span id="temp280">40</span> °C</p>
+      <p><strong>Pression :</strong> <span id="volt">3.7</span> Hpa</p>
+      <p><strong>Point de rosée :</strong> <span id="pointderosee">3.7</span> °C</p>
+      <p><strong>Tension Batterie :</strong> <span id="tensionBat">3.7</span> V</p>
+      <p><strong>Tension Panneau Solaire :</strong> <span id="tensionSol">3.7</span> V</p>
+      <p><strong>Bit de vie :</strong> <span id="tpsvie">0</span></p>
+      <p><strong>Bit de vie :</strong> <span id="anemometre">0.0</span>Km/h</p>
+    </div>
+
+    <div class="text-center mt-4">
+      <a href="/update" class="btn btn-primary">🔄 Mettre à jour (OTA)</a>
+    </div>
+  </div>
+
+  <!-- Bootstrap JS (optionnel) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        async function chargerDonnees() {
+        const res = await fetch('/data');
+        const data = await res.json();
+
+        document.getElementById('temp').textContent = data.temperature;
+        document.getElementById('hum').textContent = data.humidite;
+        document.getElementById('volt').textContent = data.pression;
+        document.getElementById('temp280').textContent = data.tempbmp280; // exemple
+        document.getElementById('tensionSol').textContent = data.tension_solaire; // exemple
+        document.getElementById('tensionBat').textContent = data.tension_batterie;
+        document.getElementById('datetime').textContent = data.datetime;
+        document.getElementById('tpsvie').textContent = data.tpsvie;
+        document.getElementById('pointderosee').textContent = data.pointderosee;
+        document.getElementById('anemometre').textContent = data.anemometre;
+        }
+
+        // Rafraîchit toutes les 5 secondes
+        setInterval(chargerDonnees, 5000);
+        chargerDonnees();
+    </script>
+</body>
+</html>
