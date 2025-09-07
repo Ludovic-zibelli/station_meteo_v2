@@ -10,4 +10,4 @@ void initPluviometre();
 void gestionPluviometre();
 float obtenirQuantitePluie_mm();
 void resetQuantitePluie();
-
+uint8_t pluvio_active_bit();

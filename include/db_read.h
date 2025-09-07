@@ -16,6 +16,7 @@ struct StationDirect {
   float ghost;
   float tpsvie;
   String timestamp;   // stocké en texte "YYYY-MM-DD HH:MM:SS" dans SQLite
+  float rafale;
 };
 
 // Lit la ligne par ID

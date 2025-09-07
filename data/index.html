@@ -23,7 +23,9 @@
       <p><strong>Tension Batterie :</strong> <span id="tensionBat">3.7</span> V</p>
       <p><strong>Tension Panneau Solaire :</strong> <span id="tensionSol">3.7</span> V</p>
       <p><strong>Bit de vie :</strong> <span id="tpsvie">0</span></p>
-      <p><strong>Bit de vie :</strong> <span id="anemometre">0.0</span>Km/h</p>
+      <p><strong>Vitesse du vent :</strong> <span id="anemometre">0.0</span>Km/h</p>
+      <p><strong>Rafale :</strong> <span id="rafale">0.0</span>Km/h</p>
+      <p><strong>Pluviometre :</strong> <span id="pluviometre">0.0</span>mm</p>
     </div>
 
     <div class="text-center mt-4">
@@ -48,10 +50,12 @@
         document.getElementById('tpsvie').textContent = data.tpsvie;
         document.getElementById('pointderosee').textContent = data.pointderosee;
         document.getElementById('anemometre').textContent = data.anemometre;
+        document.getElementById('rafale').textContent = data.rafale;
+        document.getElementById('pluviometre').textContent = data.pluviometre;
         }
 
         // Rafraîchit toutes les 5 secondes
-        setInterval(chargerDonnees, 5000);
+        setInterval(chargerDonnees, 3000);
         chargerDonnees();
     </script>
 </body>

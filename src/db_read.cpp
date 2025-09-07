@@ -20,12 +20,13 @@ static void fillFromStmt(sqlite3_stmt *stmt, StationDirect &o) {
   o.tpsvie        = sqlite3_column_double(stmt,11);
   const unsigned char *ts = sqlite3_column_text(stmt, 12);
   o.timestamp = ts ? String((const char*)ts) : String("");
+  o.rafale        = sqlite3_column_double(stmt,13);
 }
 
 bool readStationDirectById(int id, StationDirect &out) {
   const char *sql =
     "SELECT id,tempdht22,humiditer,tempbmp280,pression,lumiere,"
-    "anemometre,girouette,pluviometre,pointderosee,ghost,tpsvie,timestamp "
+    "anemometre,girouette,pluviometre,pointderosee,ghost,tpsvie,timestamp,rafale "
     "FROM station_direct WHERE id=?;";
   sqlite3_stmt *stmt = nullptr;
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
@@ -39,7 +40,7 @@ bool readStationDirectById(int id, StationDirect &out) {
 bool readLatestStationDirect(StationDirect &out) {
   const char *sql =
     "SELECT id,tempdht22,humiditer,tempbmp280,pression,lumiere,"
-    "anemometre,girouette,pluviometre,pointderosee,ghost,tpsvie,timestamp "
+    "anemometre,girouette,pluviometre,pointderosee,ghost,tpsvie,timestamp,rafale "
     "FROM station_direct "
     "ORDER BY datetime(timestamp) DESC, id DESC LIMIT 1;";
   sqlite3_stmt *stmt = nullptr;

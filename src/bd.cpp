@@ -17,13 +17,14 @@ bool updateStationDirect(
     float pointderosee,
     float ghost,
     float tpsvie,
-    String ts
+    String ts,
+    float rafale
 ) {
     sqlite3_stmt *stmt;
     const char *sql =
         "UPDATE station_direct SET "
         "tempdht22=?, humiditer=?, tempbmp280=?, pression=?, lumiere=?, "
-        "anemometre=?, girouette=?, pluviometre=?, pointderosee=?, ghost=?, tpsvie=?, timestamp=? "
+        "anemometre=?, girouette=?, pluviometre=?, pointderosee=?, ghost=?, tpsvie=?, timestamp=?, rafale=? "
         "WHERE id=?;";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_double(stmt, 1, tempdht22);
@@ -38,7 +39,8 @@ bool updateStationDirect(
         sqlite3_bind_double(stmt, 10, ghost);
         sqlite3_bind_double(stmt, 11, tpsvie);
         sqlite3_bind_text(stmt, 12, ts.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 13, id);
+        sqlite3_bind_double(stmt, 13, rafale);
+        sqlite3_bind_int(stmt, 14, id);
         if (sqlite3_step(stmt) == SQLITE_DONE) {
             sqlite3_finalize(stmt);
             return true;

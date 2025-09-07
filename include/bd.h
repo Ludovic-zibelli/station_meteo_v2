@@ -13,7 +13,8 @@ bool updateStationDirect(
     float pointderosee,
     float ghost,
     float tpsvie,
-    String ts
+    String ts,
+    float rafale
 );
 
 bool updateAnemometre(int id, float anemometre);

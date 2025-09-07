@@ -9,6 +9,7 @@
 #include "dht22.h"
 #include "pluviometre.h"
 #include <sqlite3.h>
+#include "girouette.h"
 
 //Stockage des données
 #include "SPIFFS.h"
@@ -54,6 +55,7 @@ int humiditer;
 //Anemometre
 int etat;
 float vitesse;
+float rafale;
 
 //Girouette
 int degret;
@@ -98,6 +100,14 @@ float old_vitesse = 0.0;
 #define BATTERY_PIN 34
 #define SOLAR_PIN   35
 constexpr uint8_t ANEMO_PIN = 18; // Pin de l'anémomètre
+// GPIO (ESP32 WROOM32S) fournis par toi : 32,33,25,26,27,14,12,13
+// Ordre : {N, NE, E, SE, S, SW, W, NW}
+const uint8_t PINS_GIROUETTE[8] = { 32, 33, 25, 26, 27, 14, 12, 13 };
+// invertLogic = true (par défaut) : actif quand LOW (reed->GND avec INPUT_PULLUP)
+// usePullups = true (par défaut) : active INPUT_PULLUP
+Girouette girouette(PINS_GIROUETTE, /*invertLogic*/ true, /*usePullups*/ true);
+
+
 
 void handleRoot() {
   File file = SPIFFS.open("/index.html", "r");
@@ -115,7 +125,7 @@ void handleData() {
   String json = "{";
 
   // Lecture de la dernière ligne de station_direct
-  const char *sql = "SELECT tempdht22, humiditer, pression, tempbmp280, timestamp, tpsvie, pointderosee, anemometre FROM station_direct ORDER BY id DESC LIMIT 1;";
+  const char *sql = "SELECT tempdht22, humiditer, pression, tempbmp280, timestamp, tpsvie, pointderosee, anemometre, pluviometre, rafale FROM station_direct ORDER BY id DESC LIMIT 1;";
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
     if (sqlite3_step(stmt) == SQLITE_ROW) {
       float temp = sqlite3_column_double(stmt, 0);
@@ -127,6 +137,8 @@ void handleData() {
       float pointderosee = sqlite3_column_double(stmt, 6);
       float anemometre = sqlite3_column_double(stmt, 7);
       old_vitesse = anemometre;
+      float pluviometre = sqlite3_column_double(stmt, 8);
+      float rafale = sqlite3_column_double(stmt, 9);
 
       json += "\"temperature\":" + String(temp) + ",";
       json += "\"humidite\":" + String(hum) + ",";
@@ -136,6 +148,8 @@ void handleData() {
       json += "\"tpsvie\":" + String(tpsvie) + ",";
       json += "\"pointderosee\":" + String(pointderosee) + ",";
       json += "\"anemometre\":" + String(anemometre) + ",";
+      json += "\"pluviometre\":" + String(pluviometre) + ",";
+      json += "\"rafale\":" + String(rafale) + ","; 
     }
     sqlite3_finalize(stmt);
   }
@@ -258,11 +272,19 @@ void setup() {
   // Configurer les pins ADC (au besoin, ajustez l'atténuation ici si nécessaire)
   analogSetPinAttenuation(BATTERY_PIN, ADC_11db);
   analogSetPinAttenuation(SOLAR_PIN, ADC_11db);
+
   //Initialisation du DHT22
   initDHT();
+
   // Initialisation du pluviomètre
   initPluviometre();
- 
+
+  // Initialisation de la girouette
+  girouette.begin();
+  // Si ton "Nord" mécanique est décalé, règle un offset.
+  // Ex: si ton "N" physique ferme la pin mappée "E" (90°), mets -90 pour que l'angle lise 0°.
+  // girouette.setNorthOffsetDegrees(-90);
+
 
   connectWifiFromDB(); 
     // Sert la page index.html depuis SPIFFS
@@ -291,6 +313,7 @@ void loop() {
       anemo_update();
       // Mise à jour des données toutes les 2 secondes
       vitesse = anemo_get_speed_kmh();
+      rafale = anemo_get_gust_kmh();
       Serial.print("Vitesse anémomètre: ");
       Serial.print(vitesse);
       Serial.println(" km/h");
@@ -309,12 +332,23 @@ void loop() {
     tension_solaire = solaire();
     tension_batterie = batterie();
 
-    //Pluviométre 
-    gestionPluviometre();
+    //Pluviométre
+    if (module_pluvio == 1)
+    {
+      gestionPluviometre();
+      etat_pluvio = pluvio_active_bit();
+      Serial.printf("etat_pluvio = %u\n", pluvio_active_bit());
+
+      float pluie = obtenirQuantitePluie_mm();
+      Serial.printf("Pluie cumulée : %.3f mm\n", pluie);
+      quantite = pluie;
+    }else
+    {
+      etat_pluvio = 0;
+      quantite = 0.0;
+    }
+     
     
-    float pluie = obtenirQuantitePluie_mm();
-    Serial.printf("Pluie cumulée : %.3f mm\n", pluie);
-    quantite = pluie;
 
 
 
@@ -422,6 +456,28 @@ void loop() {
         Serial.print(point_de_rosee);
         Serial.println(" °C");
 
+        //Girouette
+        if(module_girou == 1){
+          // Lecture "simple"
+          float angle = girouette.readAngle(30);  // fenêtre ~30ms
+          const char* name = girouette.directionName();
+          uint8_t mask = girouette.rawMask();
+
+          Serial.print("Girouette: ");
+          Serial.print(name);
+          Serial.print("  | angle=");
+          if (isnan(angle)) Serial.print("NaN");
+          else Serial.print(angle, 1);
+          Serial.print(" deg  | mask=0b");
+          Serial.println(mask, BIN);
+          degret = (int)angle;
+        } else
+        {
+          degret = 0;
+          etat_girou = 0;
+        }
+
+
         //Mise à jour de la base de données
         if (updateStationDirect(
             1,                // id de la ligne à mettre à jour
@@ -436,7 +492,8 @@ void loop() {
             point_de_rosee,              // pointderosee (à calculer si besoin)
             0.0,              // ghost (à définir selon ton usage)
             currentTime,               // tpsvie (à définir selon ton usage)
-            datetime
+            datetime,
+            rafale           // rafale (nouvelle variable pour la rafale)
         )) {
           Serial.println("Mise à jour réussie !");
         } else {

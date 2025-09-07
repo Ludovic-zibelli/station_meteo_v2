@@ -16,11 +16,12 @@ static float g_pluieTotale_mm = 0.0f;
 
 void IRAM_ATTR isrPluviometre() {
     const uint32_t now = micros();
-    if (now - g_lastTipUs > DEBOUNCE_US) {
+    if (now - g_lastTipUs > DEBOUNCE_US) {   // <-- ici
         g_lastTipUs = now;
         g_tipCount++;
     }
 }
+
 
 void initPluviometre() {
     pinMode(HALL_SENSOR_PIN, INPUT_PULLUP); // pull-up interne (prévoir 10k externe si câble long)
@@ -50,4 +51,11 @@ float obtenirQuantitePluie_mm() {
 
 void resetQuantitePluie() {
     g_pluieTotale_mm = 0.0f;
+}
+
+// --- Bit d'état instantané : 1 si le capteur est "actif" (aimant présent) ---
+uint8_t pluvio_active_bit() {
+    // Assure-toi que initPluviometre() a déjà été appelé (pin en INPUT_PULLUP)
+    // LOW = aimant présent devant le capteur (sortie collecteur ouvert à la masse)
+    return (digitalRead(HALL_SENSOR_PIN) == HIGH) ? 1 : 0;
 }
