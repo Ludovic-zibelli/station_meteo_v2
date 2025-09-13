@@ -106,6 +106,58 @@ const uint8_t PINS_GIROUETTE[8] = { 32, 33, 25, 26, 27, 14, 12, 13 };
 // invertLogic = true (par défaut) : actif quand LOW (reed->GND avec INPUT_PULLUP)
 // usePullups = true (par défaut) : active INPUT_PULLUP
 Girouette girouette(PINS_GIROUETTE, /*invertLogic*/ true, /*usePullups*/ true);
+constexpr uint8_t PIN_BTN_CAL = 23;     // Bouton calibration Nord (vers GND)
+
+
+// On garde une copie locale de l'offset Nord pour pouvoir recalculer un nouvel offset
+// lors de la calibration (puisqu'on n'a pas de getter dans la classe).
+float g_northOffsetDeg = 0.0f;
+
+// ----------------- UTILS -----------------
+static inline float wrap360f(float deg) {
+  deg = fmodf(deg, 360.0f);
+  if (deg < 0) deg += 360.0f;
+  return deg;
+}
+
+
+// ---------- Gestion bouton calibration (appui long) ----------
+bool btnPrev = HIGH;                // car INPUT_PULLUP
+unsigned long btnDownAt = 0;
+constexpr unsigned long LONG_PRESS_MS = 1500;
+
+
+
+void handleCalibrationButton() {
+  bool s = digitalRead(PIN_BTN_CAL);
+  unsigned long now = millis();
+
+  // front descendant = appui
+  if (btnPrev == HIGH && s == LOW) {
+    btnDownAt = now;
+  }
+  // front montant = relâchement
+  if (btnPrev == LOW && s == HIGH) {
+    if (now - btnDownAt >= LONG_PRESS_MS) {
+      // On lit un angle "actuel" (déjà avec l'offset en cours)
+      // Fenêtre courte pour ne pas bloquer longtemps
+      float angle = girouette.readAngle(24); // ~2x8ms d'attente interne (update 3 lectures)
+      if (!isnan(angle)) {
+        // Calibrer pour que l'angle courant devienne 0°
+        // angle = wrap360(raw + g_northOffsetDeg)
+        // => newOffset = wrap360(g_northOffsetDeg - angle)
+        g_northOffsetDeg = wrap360f(g_northOffsetDeg - angle);
+        girouette.setNorthOffsetDegrees(g_northOffsetDeg);
+        Serial.printf("[Girouette] Calibration Nord OK ✅ (offset=%.1f°)\n", g_northOffsetDeg);
+      } else {
+        Serial.println("[Girouette] Calibration ignorée: angle invalide ❌");
+      }
+    } else {
+      Serial.println("[Girouette] Appui court ignoré.");
+    }
+  }
+  btnPrev = s;
+}
 
 
 
@@ -280,11 +332,23 @@ void setup() {
   initPluviometre();
 
   // Initialisation de la girouette
+  girouette.enableNorthButton(/*pin=*/23, /*activeLow=*/true, /*debounceMs=*/30, /*longPressMs=*/1500);
   girouette.begin();
+
   // Si ton "Nord" mécanique est décalé, règle un offset.
   // Ex: si ton "N" physique ferme la pin mappée "E" (90°), mets -90 pour que l'angle lise 0°.
   // girouette.setNorthOffsetDegrees(-90);
+  
+  
+ // Bouton calibration
+  pinMode(PIN_BTN_CAL, INPUT_PULLUP);
 
+  // Girouette
+  girouette.begin();
+  girouette.setNorthOffsetDegrees(g_northOffsetDeg); // au cas où tu veux restaurer un offset sauvegardé
+
+  Serial.println(F("[System] Init OK. Maintiens le bouton 1.5 s pour calibrer le Nord."));
+     
 
   connectWifiFromDB(); 
     // Sert la page index.html depuis SPIFFS
@@ -306,6 +370,13 @@ void loop() {
     // Gestion des requêtes du serveur web
     server.handleClient();
     ElegantOTA.loop();
+    
+    //Gestion activation des modules
+    if (updateModuleVariablesFromDB(1)) {
+      Serial.println("Activation des modules mis à jour depuis la base !");
+    } else {
+      Serial.println("Erreur lors de la lecture des modules.");
+    }
 
     if(module_anemo == 1) {
       etat_anemo = anemo_ok_bit_strict(); // 1 si OK, 0 sinon
@@ -348,10 +419,6 @@ void loop() {
       quantite = 0.0;
     }
      
-    
-
-
-
     DateTime now = rtc.now();
     sprintf(datetime, "%04d-%02d-%02d %02d:%02d:%02d",
           now.year(), now.month(), now.day(),
@@ -459,25 +526,50 @@ void loop() {
         //Girouette
         if(module_girou == 1){
           // Lecture "simple"
-          float angle = girouette.readAngle(30);  // fenêtre ~30ms
-          const char* name = girouette.directionName();
-          uint8_t mask = girouette.rawMask();
+        
+          
+          // 1) Mettre à jour la girouette avec un petit debounce non bloquant
+          //    (update() lit 1 fois, puis 2 confirmations avec delay(debounceMs) → ici ~2x2ms)
+          girouette.update(/*debounceMs=*/2, /*stableReads=*/3);
 
-          Serial.print("Girouette: ");
-          Serial.print(name);
-          Serial.print("  | angle=");
-          if (isnan(angle)) Serial.print("NaN");
-          else Serial.print(angle, 1);
-          Serial.print(" deg  | mask=0b");
-          Serial.println(mask, BIN);
-          degret = (int)angle;
-        } else
+          
+          // 2) Gérer le bouton (appui long -> calibration)
+          handleCalibrationButton();
+
+          // 3) Affichage périodique
+          static unsigned long tPrint = 0;
+          if (millis() - tPrint >= 1000) {
+            tPrint = millis();
+
+            // readAngle(windowMs) relance une petite fenêtre de mesure (~12-18ms selon windowMs)
+            // Si tu veux éviter ce délai, on peut ajouter un getter dans la classe pour l'angle courant.
+            degret = girouette.readAngle(30);
+            const char* name = girouette.readName(30);
+
+            Serial.print(F("[Girouette] Dir="));
+            Serial.print(name);
+            Serial.print(F(" | Angle="));
+            if (isnan(degret)) Serial.println(F("NaN"));
+            
+            //float angle_etat = girouette.readAngle(30); // angle actuel
+              if (!isnan(degret)) {
+                etat_girou = 1; // fonctionne
+              } else {
+                etat_girou = 0; // problème
+              }
+
+              // Affichage pour debug
+              Serial.print(F("Etat girouette: "));
+              Serial.println(etat_girou);
+            
+          }
+        }
+        else
         {
           degret = 0;
           etat_girou = 0;
         }
-
-
+      
         //Mise à jour de la base de données
         if (updateStationDirect(
             1,                // id de la ligne à mettre à jour
@@ -489,7 +581,7 @@ void loop() {
             vitesse,          // anemometre
             degret,           // girouette (ou la variable correspondant à la direction)
             quantite,         // pluviometre
-            point_de_rosee,              // pointderosee (à calculer si besoin)
+            point_de_rosee,   // pointderosee (à calculer si besoin)
             0.0,              // ghost (à définir selon ton usage)
             currentTime,               // tpsvie (à définir selon ton usage)
             datetime,
@@ -509,6 +601,23 @@ void loop() {
             Serial.println("Tensions mises à jour !");
         } else {
             Serial.println("Erreur lors de la mise à jour des tensions !");
+        }
+
+        // Mise à jour de l'état des capteurs
+        if(updateEtatCapteurs(
+            1,                // id de la ligne à mettre à jour
+            etat_dht22,
+            etat_bmp280,
+            etat_pluvio,
+            etat_girou,
+            etat_anemo,
+            tension_batterie,
+            tension_solaire
+        )) 
+        {
+          Serial.println("État des capteurs mis à jour !");
+        } else {
+          Serial.println("Erreur lors de la mise à jour de l'état des capteurs !");
         }
 
         if(activation_envoi_api == 1)

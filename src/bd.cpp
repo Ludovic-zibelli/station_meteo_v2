@@ -89,3 +89,32 @@ bool updateTensions(int id, float tension_batterie, float tension_solaire) {
     }
     return false;
 }
+
+//Mise a jour des etats des capteurs
+bool updateEtatCapteurs(int id,
+                        int capteur_dht22, int capteur_bmp280, int capteur_pluvio,
+                        int capteur_girou, int capteur_anemo, float tension_batterie, float tension_solaire) {
+    sqlite3_stmt *stmt;
+    const char *sql = "UPDATE etatcapteurs SET "
+                      "capteur_dht22=?, capteur_bmp280=?, capteur_pluvio=?, "
+                      "capteur_girou=?, capteur_anemo=?,  tension_solaire=?, tension_batterie=? "
+                      "WHERE id=?;";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, capteur_dht22);
+        sqlite3_bind_int(stmt, 2, capteur_bmp280);
+        sqlite3_bind_int(stmt, 3, capteur_pluvio);
+        sqlite3_bind_int(stmt, 4, capteur_girou);
+        sqlite3_bind_int(stmt, 5, capteur_anemo);
+        sqlite3_bind_double(stmt, 6, tension_solaire);
+        sqlite3_bind_double(stmt, 7, tension_batterie);
+        sqlite3_bind_int(stmt, 8, id);
+
+        if (sqlite3_step(stmt) == SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            return true;
+        }
+        sqlite3_finalize(stmt);
+    }
+    return false;
+}

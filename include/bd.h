@@ -24,3 +24,7 @@ bool updateTensions(
     float tension_batterie,
     float tension_solaire
 );
+
+bool updateEtatCapteurs(int id,
+                        int capteur_dht22, int capteur_bmp280, int capteur_pluvio,
+                        int capteur_girou, int capteur_anemo, float tension_batterie, float tension_solaire);

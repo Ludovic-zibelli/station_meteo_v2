@@ -20,12 +20,19 @@ void Girouette::begin() {
       pinMode(_pins[i], INPUT);
     }
   }
+  if (_btnEnabled && _btnPin >= 0) {
+    pinMode(_btnPin, _btnActiveLow ? INPUT_PULLUP : INPUT);
+    _btnLast = false;
+    _btnChangeMs = millis();
+    _btnLongFired = false;
+    _calibJustDone = false;
+  }
+  _health = Health::NOT_INITIALIZED;
   // Lecture initiale
   update();
 }
 
 void Girouette::setNorthOffsetDegrees(float offsetDeg) {
-  // Normalise dans [0, 360) pour garder une valeur propre
   _northOffset = fmodf(offsetDeg, 360.0f);
   if (_northOffset < 0) _northOffset += 360.0f;
 }
@@ -39,6 +46,7 @@ bool Girouette::update(uint16_t debounceMs, uint8_t stableReads) {
   // Essaie d'obtenir le même masque "stableReads" fois d'affilée
   while (stableCount < stableReads) {
     delay(debounceMs);
+    pollButton(); // échantillonne le bouton pendant l'attente
     uint8_t cur = readMaskOnce();
     if (cur == last) {
       ++stableCount;
@@ -50,6 +58,28 @@ bool Girouette::update(uint16_t debounceMs, uint8_t stableReads) {
 
   _lastMask = last;
   computeFromMask(last);
+
+  // Auto-test : accumule les positions vues uniquement pour états plausibles
+  if (_selfTest) {
+    // On accepte 1 bit ou 2 bits adjacents
+    uint8_t lowI=0, highI=0;
+    if (isSingleBit(last) || areAdjacentBits(last, lowI, highI)) {
+      _seenMask |= last;
+    }
+    if ((millis() - _selfStart) >= _selfDur) {
+      _selfTest = false;
+      _selfFinished = true;
+    }
+  }
+
+  // Quand l'auto-test est en cours, annonce l'état spécifique
+  if (_selfTest) {
+    _health = Health::SELF_TEST_RUNNING;
+  }
+
+  // Bouton (détection appui long -> calibration)
+  pollButton();
+
   return !isnan(_lastAngle) || _lastIndex >= 0;
 }
 
@@ -131,9 +161,12 @@ float Girouette::wrap360(float deg) {
 }
 
 void Girouette::computeFromMask(uint8_t m) {
+  // Valeurs par défaut
+  _lastIndex = -1;
+  _lastAngle = NAN;
+
   if (m == 0) {
-    _lastIndex = -1;
-    _lastAngle = NAN;
+    _health = Health::NO_ACTIVE;
     return;
   }
 
@@ -144,10 +177,11 @@ void Girouette::computeFromMask(uint8_t m) {
     _lastIndex = idx;
     float base = idx * 45.0f;                  // 0,45,90,...
     _lastAngle = wrap360(base + _northOffset); // applique l'offset Nord
+    _health = Health::OK;
     return;
   }
 
-  // Cas 2: deux bits adjacents => on prend la moyenne circulaire (milieu, 22.5° entre les secteurs)
+  // Cas 2: deux bits adjacents => moyenne circulaire (milieu)
   uint8_t lowI = 0, highI = 0;
   if (areAdjacentBits(m, lowI, highI)) {
     float a1 = lowI  * 45.0f;
@@ -165,15 +199,59 @@ void Girouette::computeFromMask(uint8_t m) {
     float angle = wrap360(mean + _northOffset);
     _lastAngle = angle;
 
-    // Index "proche" pour nom/enum : arrondi au secteur le plus proche
+    // Index "le plus proche" pour nom/enum
     int idx = (int)floorf((angle + 22.5f) / 45.0f) % 8;
     if (idx < 0) idx += 8;
     _lastIndex = idx;
+
+    _health = Health::OK;
     return;
   }
 
-  // Cas 3: motifs ambigus (plus de 2 bits, ou 2 non-adjacents) => inconnu
-  _lastIndex = -1;
-  _lastAngle = NAN;
+  // Cas 3: motifs ambigus => anormal
+  _health = Health::MULTIPLE_ACTIVE;
+}
+
+void Girouette::enableNorthButton(int pin, bool activeLow, uint16_t debounceMs, uint16_t longPressMs) {
+  _btnPin        = pin;
+  _btnActiveLow  = activeLow;
+  _btnDebounceMs = debounceMs;
+  _btnLongMs     = longPressMs;
+  _btnEnabled    = (pin >= 0);
+}
+
+void Girouette::pollButton() {
+  if (!_btnEnabled || _btnPin < 0) return;
+
+  int lv = digitalRead(_btnPin);
+  bool pressed = _btnActiveLow ? (lv == LOW) : (lv == HIGH);
+  unsigned long now = millis();
+
+  // Anti-rebond : on valide un changement d’état si stable depuis _btnDebounceMs
+  if (pressed != _btnLast) {
+    if ((now - _btnChangeMs) >= _btnDebounceMs) {
+      _btnLast = pressed;
+      _btnChangeMs = now;
+
+      if (_btnLast) {
+        // Début d'appui : on réarme le long-press
+        _btnLongFired = false;
+      } else {
+        // Relâchement : si le long press n'a pas été déclenché, c'était un appui court -> on ne fait rien
+      }
+    }
+  } else {
+    // Pas de changement d’état : si le bouton est maintenu, vérifier le long-press
+    if (_btnLast && !_btnLongFired && (now - _btnChangeMs) >= _btnLongMs) {
+      _btnLongFired = true;
+
+      // Calibration : rendre l'angle courant égal à 0°
+      // angle = wrap360(raw + _northOffset) => newOffset = wrap360(_northOffset - angle)
+      if (!isnan(_lastAngle)) {
+        _northOffset = wrap360(_northOffset - _lastAngle);
+        _calibJustDone = true;
+      }
+    }
+  }
 }
 
