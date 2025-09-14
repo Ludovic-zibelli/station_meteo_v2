@@ -360,12 +360,50 @@ void setup() {
 
   server.begin();
 
+  File root = SPIFFS.open("/");
+  File file = root.openNextFile();
+  while (file) {
+    Serial.println(file.name());
+    file = root.openNextFile();
+  }
+
+
  
 }
 
 void loop() {
     static unsigned long previousTime = 0;  // Temps du dernier traitement
     unsigned long currentTime = millis();  // Temps actuel
+
+    if (db == nullptr || sqlite3_errcode(db) != SQLITE_OK) {
+    Serial.println("Base de données non disponible !");
+    }
+    //Essais bdd
+    if (db == nullptr) {
+      Serial.println("⚠️ db est null !");
+    } else {
+      Serial.printf("Code SQLite: %d\n", sqlite3_errcode(db));
+    }
+
+    if (!SPIFFS.exists("/spiffs/station.db")) {
+    Serial.println("⚠️ station.db a disparu, tentative de réouverture...");
+    sqlite3_close(db); // au cas où
+    int rc = sqlite3_open("/spiffs/station.db", &db);
+    if (rc != SQLITE_OK) {
+      Serial.printf("❌ Erreur réouverture DB: %s\n", sqlite3_errmsg(db));
+    } else {
+      Serial.println("✅ Base réouverte !");
+    }
+  }
+
+
+
+    sqlite3_close(db); // au cas où
+    int rc = sqlite3_open("/spiffs/station.db", &db);
+    if (rc != SQLITE_OK) {
+      Serial.printf("Erreur réouverture DB: %s\n", sqlite3_errmsg(db));
+    }
+
    
     // Gestion des requêtes du serveur web
     server.handleClient();
@@ -619,9 +657,11 @@ void loop() {
         } else {
           Serial.println("Erreur lors de la mise à jour de l'état des capteurs !");
         }
-
+        
+        // Envoi des données à l'API si activé
         if(activation_envoi_api == 1)
         {
+          
           sendLatestRowToApi(); // ← lit la base et envoie à l’API
         } else
         {

@@ -34,14 +34,14 @@ struct Modules {
   int girou;
   int pluvio;
   int tension;
-  int bivite;
+  int bitvie;
 };
 
 // Fonction pour lire les modules depuis la table etatcapteurs
 bool readModulesById(int id,
                      int &module_bmp280, int &module_dht22, int &module_anemo,
                      int &module_girou, int &module_pluvio, int &module_tension,
-                     int &module_bivite);
+                     int &module_bitvie);
 
 
 extern int module_bmp280;

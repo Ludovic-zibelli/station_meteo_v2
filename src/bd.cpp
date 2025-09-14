@@ -41,6 +41,8 @@ bool updateStationDirect(
         sqlite3_bind_text(stmt, 12, ts.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_double(stmt, 13, rafale);
         sqlite3_bind_int(stmt, 14, id);
+        Serial.printf("SQLite error: %s\n", sqlite3_errmsg(db));
+
         if (sqlite3_step(stmt) == SQLITE_DONE) {
             sqlite3_finalize(stmt);
             return true;
@@ -63,6 +65,7 @@ bool updateAnemometre(int id, float anemometre) {
 
     sqlite3_bind_double(stmt, 1, anemometre);
     sqlite3_bind_int(stmt, 2, id);
+    Serial.printf("SQLite error: %s\n", sqlite3_errmsg(db));
 
     int rc = sqlite3_step(stmt);
     bool ok = (rc == SQLITE_DONE);
@@ -81,6 +84,8 @@ bool updateTensions(int id, float tension_batterie, float tension_solaire) {
         sqlite3_bind_double(stmt, 1, tension_batterie);
         sqlite3_bind_double(stmt, 2, tension_solaire);
         sqlite3_bind_int(stmt, 3, id);
+        Serial.printf("SQLite error: %s\n", sqlite3_errmsg(db));
+
         if (sqlite3_step(stmt) == SQLITE_DONE) {
             sqlite3_finalize(stmt);
             return true;
@@ -109,6 +114,7 @@ bool updateEtatCapteurs(int id,
         sqlite3_bind_double(stmt, 6, tension_solaire);
         sqlite3_bind_double(stmt, 7, tension_batterie);
         sqlite3_bind_int(stmt, 8, id);
+        Serial.printf("SQLite error: %s\n", sqlite3_errmsg(db));
 
         if (sqlite3_step(stmt) == SQLITE_DONE) {
             sqlite3_finalize(stmt);
