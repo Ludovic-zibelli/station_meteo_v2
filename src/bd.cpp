@@ -124,3 +124,48 @@ bool updateEtatCapteurs(int id,
     }
     return false;
 }
+
+
+bool updateModulesInDB(int id, int bmp280, int dht22, int anemo, int girou, int pluvio, int tension, int bitvie) {
+  sqlite3_stmt *stmt;
+  const char *sql = "UPDATE etatcapteurs SET module_bmp280=?, module_dht22=?, module_anemo=?, module_girou=?, module_pluvio=?, module_tension=?, module_bitvie=? WHERE id=?;";
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+    Serial.printf("Erreur prepare (updateModulesInDB): %s\n", sqlite3_errmsg(db));
+    return false;
+  }
+  sqlite3_bind_int(stmt, 1, bmp280);
+  sqlite3_bind_int(stmt, 2, dht22);
+  sqlite3_bind_int(stmt, 3, anemo);
+  sqlite3_bind_int(stmt, 4, girou);
+  sqlite3_bind_int(stmt, 5, pluvio);
+  sqlite3_bind_int(stmt, 6, tension);
+  sqlite3_bind_int(stmt, 7, bitvie);
+  sqlite3_bind_int(stmt, 8, id);
+  bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
+  if (!ok) Serial.printf("Erreur step (updateModulesInDB): %s\n", sqlite3_errmsg(db));
+  sqlite3_finalize(stmt);
+  return ok;
+}
+
+bool updateActivationApiInDB(int id, int activation_envoi_api) {
+    sqlite3_stmt *stmt;
+    const char *sql = "UPDATE config SET activation_envoi_api = ? WHERE id = ?;";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        Serial.printf("❌ Erreur prepare (updateActivationApiInDB): %s\n", sqlite3_errmsg(db));
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, activation_envoi_api);
+    sqlite3_bind_int(stmt, 2, id);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        Serial.printf("❌ Erreur step (updateActivationApiInDB): %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+

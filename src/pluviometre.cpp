@@ -57,5 +57,5 @@ void resetQuantitePluie() {
 uint8_t pluvio_active_bit() {
     // Assure-toi que initPluviometre() a déjà été appelé (pin en INPUT_PULLUP)
     // LOW = aimant présent devant le capteur (sortie collecteur ouvert à la masse)
-    return (digitalRead(HALL_SENSOR_PIN) == HIGH) ? 1 : 0;
+    return (digitalRead(HALL_SENSOR_PIN) == LOW) ? 1 : 0;
 }

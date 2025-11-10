@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="shortcut icon" href="/images/logo_meteo.png" />
+  <title>Station METEOSPIT.fr ESP32|Configuration</title>
+  <!-- Bootstrap CSS depuis un CDN -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<container-fluid>
+        <header>
+                <nav class="nav_dek navbar fixed-top navbar-expand-lg  navbar-dark bg-dark">
+            
+                    <a class="navbar-brand" href="{{ path('home') }}">
+                        <img src="images/logo_meteo_head6.png" width="260" height="100" class="logo_site align-left rounded float-left" alt="Station Meteo">
+                    </a>
+                    <div class="collapse navbar-collapse" id="navbarText">
+                        <ul class="navbar-nav ml-auto">
+                            <li class="nav-item">
+                                <a class="nav-link" href="/">Accueil</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="/config">Configuration</a>
+                            </li>
+                            <li class="nav-item">
+                            <a class="nav-link" href="/infos">Info compte Meteospit.fr</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="/update">Mise a jour</a>
+                            </li>
+                        </ul>
+                    </div>
+
+                </nav>
+                <div style="height:120px;">
+                  etat 
+                </div> <!-- Espace pour la navbar fixe -->
+        </header> 
+<body>
+<div class="row">
+  <h2>Configuration des modules et API</h2>
+  <form action="/update_config" method="POST">
+    <fieldset>
+      <legend>Modules capteurs</legend>
+      <label><input type="checkbox" name="bmp280" value="1"> BMP280</label><br>
+      <label><input type="checkbox" name="dht22" value="1"> DHT22</label><br>
+      <label><input type="checkbox" name="anemo" value="1"> Anémomètre</label><br>
+      <label><input type="checkbox" name="girou" value="1"> Girouette</label><br>
+      <label><input type="checkbox" name="pluvio" value="1"> Pluviomètre</label><br>
+      <label><input type="checkbox" name="tension" value="1"> Tension</label><br>
+      <label><input type="checkbox" name="bitvie" value="1"> Bitvie</label><br>
+    </fieldset>
+    <fieldset>
+      <legend>API</legend>
+      <label><input type="checkbox" name="api" value="1"> Activer l'envoi à l'API</label><br>
+    </fieldset>
+    <input type="submit" value="Mettre à jour">
+  </form>
+  <section>
+  <h3>État des capteurs (depuis la base)</h3>
+  <style>
+    .ok{color:#0a0;background:#e8ffe8;padding:2px 6px;border-radius:4px}
+    .ko{color:#a00;background:#ffe8e8;padding:2px 6px;border-radius:4px}
+    table.state{border-collapse:collapse;width:100%;max-width:640px}
+    table.state td, table.state th{border:1px solid #ccc;padding:6px 8px}
+    table.state th{background:#f7f7f7;text-align:left}
+    .mono{font-family:ui-monospace,Consolas,monospace}
+  </style>
+
+  <table class="state" id="etat">
+    <thead>
+      <tr><th>Module</th><th>Activation</th><th>État</th><th>Détails</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>BMP280</td><td id="m_bmp280">?</td><td id="e_bmp280">?</td><td class="mono" id="d_bmp280">—</td></tr>
+      <tr><td>DHT22</td> <td id="m_dht22">?</td> <td id="e_dht22">?</td>  <td class="mono" id="d_dht22">—</td></tr>
+      <tr><td>Anémomètre</td><td id="m_anemo">?</td><td id="e_anemo">?</td><td class="mono" id="d_anemo">—</td></tr>
+      <tr><td>Girouette</td><td id="m_girou">?</td><td id="e_girou">?</td><td class="mono" id="d_girou">—</td></tr>
+      <tr><td>Pluviomètre</td><td id="m_pluvio">?</td><td id="e_pluvio">?</td><td class="mono" id="d_pluvio">—</td></tr>
+      <tr><td>Tensions</td><td id="m_tension">?</td><td>—</td>
+          <td class="mono">Solaire: <span id="vsol">—</span> V &nbsp;|&nbsp; Batterie: <span id="vbat">—</span> V</td></tr>
+      <tr><td>Bitvie</td><td id="m_bitvie">?</td><td>—</td><td class="mono">—</td></tr>
+    </tbody>
+  </table>
+
+  <p id="lastUpdate" class="mono"></p>
+  <button onclick="fetch('/settime')">Synchroniser l'heure (NTP)</button>
+</div>
+  <script>
+    async function refreshEtat(){
+      try{
+        const r = await fetch('/etatcapteurs',{cache:'no-store'});
+        if(!r.ok){ throw new Error('HTTP '+r.status); }
+        const j = await r.json();
+
+        // Helpers
+        const badge = v => `<span class="${v? 'ok':'ko'}">${v? 'OK':'KO'}</span>`;
+        const set = (id, html) => { const e=document.getElementById(id); if(e) e.innerHTML = html; };
+
+        // Modules (activations)
+        if (j.modules){
+          set('m_bmp280', badge(!!j.modules.bmp280));
+          set('m_dht22',  badge(!!j.modules.dht22));
+          set('m_anemo',  badge(!!j.modules.anemo));
+          set('m_girou',  badge(!!j.modules.girou));
+          set('m_pluvio', badge(!!j.modules.pluvio));
+          set('m_tension',badge(!!j.modules.tension));
+          set('m_bitvie', badge(!!j.modules.bitvie));
+        }
+
+        // États capteurs + tensions
+        if (j.etat){
+          set('e_bmp280', badge(!!j.etat.bmp280));
+          set('e_dht22',  badge(!!j.etat.dht22));
+          set('e_anemo',  badge(!!j.etat.anemo));
+          set('e_girou',  badge(!!j.etat.girou));
+          set('e_pluvio', badge(!!j.etat.pluvio));
+
+          // Détails texte (facultatif)
+          set('d_bmp280', j.etat.bmp280 ? 'Capteur OK' : 'Aucune lecture valide');
+          set('d_dht22',  j.etat.dht22  ? 'Capteur OK' : 'Lecture KO');
+          set('d_anemo',  j.etat.anemo  ? 'Pulses détectés' : 'Aucun top');
+          set('d_girou',  j.etat.girou  ? 'Position détectée' : 'Indéterminée');
+          set('d_pluvio', j.etat.pluvio ? 'Bascule détectée' : 'Aucune bascule');
+
+          // Tensions
+          if (typeof j.etat.tension_solaire === 'number')
+            set('vsol', j.etat.tension_solaire.toFixed(2));
+          if (typeof j.etat.tension_batterie === 'number')
+            set('vbat', j.etat.tension_batterie.toFixed(2));
+        }
+
+        const now = new Date();
+        set('lastUpdate', 'Dernière mise à jour: '+
+          now.toLocaleDateString()+' '+now.toLocaleTimeString());
+      }catch(e){
+        console.error(e);
+      }
+    }
+    setInterval(refreshEtat, 2000);
+    refreshEtat();
+  </script>
+</section>
+
+</body>
+</container-fluid>
+</html>

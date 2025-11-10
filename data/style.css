@@ -1,0 +1,234 @@
+@media (max-width: 768px)
+{
+	.carousel
+	{
+		display: none;
+	}
+
+	.logo_site
+	{
+		display: none;
+	}
+
+	.nav_dek
+	{
+		display: none;
+	}
+	#canvas_status
+	{
+		display: none;
+		visibility: hidden;
+	}
+    .anim_lumier
+    {
+        visibility: hidden;
+        display: none;
+    }
+	.arduino
+	{
+		width: 150px;
+		height: 150px;
+	}
+    .arduino
+    {
+        width: 100px;
+        height: 100px;
+    }
+    header
+    {
+        width: 100%;
+    }
+
+
+}
+@media (min-width: 768px)
+{
+	.logo_site_mobile
+	{
+		display: none;
+	}
+
+	.nav_mobile
+	{
+		display: none;
+		visibility:hidden;
+	}
+
+}
+
+htlm
+{
+    width: auto;
+}
+
+.carousel
+{
+	margin-bottom: 20px;
+}
+
+.donnee_meteo
+{
+	margin-top: 10px;
+}
+
+.articles_home
+{
+	margin-top: 10px;
+}
+
+.contact_home
+{
+	margin-top: 10px;
+}
+
+.gauges_index
+{
+	margin-top: 10px;
+}
+
+ul 
+{
+	list-style-type: none;
+	display: inline-block;
+	margin: 0px;
+}
+
+.bouton_add_sauv
+{
+	padding-top: 10px;
+}
+
+.titre
+{
+	margin-top: 10px;
+	margin-bottom: 10px;
+	padding-bottom: 10px;
+}
+
+.bd-placeholder-img
+{
+	font-size: 1.125rem;
+	text-anchor: middle;
+	-webkit-user-select: none;
+	-moz-user-select: none;
+	-ms-user-select: none;
+	user-select: none;
+}
+
+.form-signin
+{
+	width: 100%;
+	max-width: 330px;
+	padding: 15px;
+	margin: auto;
+}
+
+.form-signin .checkbox {
+	font-weight: 400;
+}
+.form-signin .form-control {
+	position: relative;
+	box-sizing: border-box;
+	height: auto;
+	padding: 10px;
+	font-size: 16px;
+}
+.form-signin .form-control:focus {
+	z-index: 2;
+}
+.form-signin input[type="email"] {
+	margin-bottom: -1px;
+	border-bottom-right-radius: 0;
+	border-bottom-left-radius: 0;
+}
+.form-signin input[type="password"] {
+	margin-bottom: 10px;
+	border-top-left-radius: 0;
+	border-top-right-radius: 0;
+}
+
+label
+{
+	font-size: 2.5rem;
+}
+
+.card-subtitle
+{
+	padding-top: 20px;
+}
+
+.card
+{
+	margin: 0 auto; /* Added */
+	float: none; /* Added */
+	margin-bottom: 10px; /* Added */
+}
+
+.envoi_contact
+{
+	padding-top: 15px;
+}
+
+.card_admin
+{
+	margin-top: 10px;
+}
+
+.recherche
+{
+	padding-top: 10px;
+}
+
+.center_div{
+	margin: 0 auto;
+	width:80% /* value of your choice which suits your alignment */
+}
+body
+{
+	margin:0 auto;
+	width: 100%;
+	overflow-x: hidden;
+	padding-top: 100px;
+}
+
+header
+{
+    margin:0 auto;
+    overflow-x: hidden;
+    width: 100%;
+}
+
+
+.presentation
+{
+	margin-top: 10px;
+}
+
+.index
+{
+	margin-top: 10px;
+}
+
+.anim_lumier
+{
+	width: 750px;
+	height: 250px;
+	border: 1px solid black;
+	box-shadow: 6px 6px 3px black;
+	border-radius: 10px;
+	margin-bottom: 20px;
+}
+
+.card_articles
+{
+	height: 700px;
+}
+
+.minimaxsearch
+{
+	margin-bottom: 10px;
+}
+
+.bg-orange {
+    background-color: #fd7e14 !important;
+}

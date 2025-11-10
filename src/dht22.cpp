@@ -8,10 +8,18 @@
 // Création de l'objet DHT
 DHT dht(DHTPIN, DHTTYPE);
 
+
+static unsigned long g_dhtWarmupUntil = 0;
+static bool g_dhtReady = false;
+
+
 bool dhtStatus = false; 
 
 void initDHT() {
     dht.begin();
+    g_dhtWarmupUntil = millis() + 2000; // chauffe non-bloquante
+    g_dhtReady = false;
+
     delay(2000); // Attente pour stabilisation du capteur
     float temp = dht.readTemperature();
     if (!isnan(temp)) {
@@ -26,7 +34,11 @@ void initDHT() {
 
 
 bool isDHTReady() {
-    return dhtStatus;
+  if (!g_dhtReady && millis() >= g_dhtWarmupUntil) {
+    float t = dht.readTemperature();
+    g_dhtReady = !isnan(t);
+  }
+  return g_dhtReady;
 }
 
 

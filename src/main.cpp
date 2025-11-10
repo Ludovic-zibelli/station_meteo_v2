@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <ArduinoJson.h>
 
 //Capteurs
 #include <anemometre.h>
@@ -8,7 +9,6 @@
 #include <Wire.h>
 #include "dht22.h"
 #include "pluviometre.h"
-#include <sqlite3.h>
 #include "girouette.h"
 
 //Stockage des données
@@ -23,6 +23,7 @@
 
 //Base de données
 #include "bd.h"
+#include "bd_mgr.h"
 
 //RTC
 #include <RTClib.h>
@@ -33,6 +34,10 @@
 //Envoi des donnees 
 #include "api.h"
 #include "db_read.h"
+
+
+
+#include <cstring> // IMPORTANT pour memcmp
 
 RTC_DS1307 rtc;
 
@@ -90,6 +95,8 @@ int module_pluvio = 1; //1 = Pluviomètre activé, 0 = désactivé
 int module_tension = 1; //1 = Mesure des tensions activée, 0 = désactivée
 int module_bitvie = 1; //1 = Bitvie activé, 0 = désactivé
 
+
+
 //Variable date heure
 char datetime[20]; // taille suffisante pour "2025-08-25 21:45:59"
 
@@ -126,6 +133,84 @@ bool btnPrev = HIGH;                // car INPUT_PULLUP
 unsigned long btnDownAt = 0;
 constexpr unsigned long LONG_PRESS_MS = 1500;
 
+extern void setupLocalStationApiHandler(WebServer &server);
+extern void maybeRefreshStationInfo();
+extern bool fetchStationInfoFromRemote();
+extern void startStationInfoBackgroundTask();
+
+Modules mods{};      // état courant en mémoire
+Modules lastMods{};  // pour comparaison
+
+//Remise a l'heure du RTC avec la compilation de l'IDE
+
+void setRTCFromNTP() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        Serial.println("Erreur NTP");
+        return;
+    }
+    rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                        timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
+    Serial.println("RTC mis à jour depuis NTP !");
+}
+
+void handleSetTime() {
+    setRTCFromNTP();
+    server.send(200, "text/plain", "RTC mis à l'heure !");
+}
+
+// Lit la config modules (id=1) depuis la table etatcapteurs via db_read.cpp
+bool loadModulesFromDB(Modules& out) {
+  // (facultatif mais recommandé si tu utilises db_mgr et un serveur async) :
+  // DbLock _;
+
+  int mb, md, ma, mg, mp, mt, mv;
+  if (!readModulesById(1, mb, md, ma, mg, mp, mt, mv)) {
+    return false;
+  }
+  out.bmp280 = mb;
+  out.dht22  = md;
+  out.anemo  = ma;
+  out.girou  = mg;
+  out.pluvio = mp;
+  out.tension= mt;
+  out.bitvie = mv;
+  return true;
+}
+
+
+static bool modulesEqual(const Modules& a, const Modules& b) {
+  return a.bmp280 == b.bmp280 &&
+         a.dht22  == b.dht22  &&
+         a.anemo  == b.anemo  &&
+         a.girou  == b.girou  &&
+         a.pluvio == b.pluvio &&
+         a.tension== b.tension&&
+         a.bitvie == b.bitvie;
+}
+
+// Déclaration de applyModuleChange pour éviter l'erreur de compilation
+void applyModuleChange(const Modules& oldM, const Modules& newM) {
+  if (oldM.anemo != newM.anemo) {
+    if (newM.anemo) {
+      anemo_init(ANEMO_PIN, 0.6667f, 0.0f, 1, 2000, 100.0f);
+      pinMode(ANEMO_PIN, INPUT_PULLUP);
+      Serial.println(F("[CFG] Anémomètre ACTIVÉ"));
+    } else {
+      Serial.println(F("[CFG] Anémomètre DÉSACTIVÉ"));
+    }
+  }
+  // ... idem pour pluvio, bmp280, dht22, girouette, tension ...
+
+  // Synchronise aussi tes variables globales existantes :
+  module_bmp280 = newM.bmp280;
+  module_dht22  = newM.dht22;
+  module_anemo  = newM.anemo;
+  module_girou  = newM.girou;
+  module_pluvio = newM.pluvio;
+  module_tension= newM.tension;
+  module_bitvie = newM.bitvie;
+}
 
 
 void handleCalibrationButton() {
@@ -171,7 +256,7 @@ void handleRoot() {
   }
 }
 
-sqlite3 *db;
+
 void handleData() {
   sqlite3_stmt *stmt;
   String json = "{";
@@ -262,6 +347,54 @@ void connectWifiFromDB() {
   }
 }
 
+#include <ArduinoJson.h>
+
+void handleEtatCapteurs() {
+  // DbLock _; // (facultatif, prépare Async)  // Supprimé car non défini
+  StaticJsonDocument<512> doc;
+  JsonObject etat = doc.createNestedObject("etat");
+  JsonObject modules = doc.createNestedObject("modules");
+
+  // etatcapteurs (etat)
+  sqlite3_stmt* stmt=nullptr;
+  const char* sql1 =
+    "SELECT capteur_dht22, capteur_bmp280, capteur_pluvio, capteur_girou, "
+    "capteur_anemo, tension_solaire, tension_batterie FROM etatcapteurs WHERE id=1;";
+  if (sqlite3_prepare_v2(db, sql1, -1, &stmt, NULL) == SQLITE_OK &&
+      sqlite3_step(stmt) == SQLITE_ROW) {
+    etat["dht22"]            = sqlite3_column_int(stmt,0);
+    etat["bmp280"]           = sqlite3_column_int(stmt,1);
+    etat["pluvio"]           = sqlite3_column_int(stmt,2);
+    etat["girou"]            = sqlite3_column_int(stmt,3);
+    etat["anemo"]            = sqlite3_column_int(stmt,4);
+    etat["tension_solaire"]  = sqlite3_column_double(stmt,5);
+    etat["tension_batterie"] = sqlite3_column_double(stmt,6);
+  }
+  sqlite3_finalize(stmt);
+
+  // etatcapteurs (modules)
+  const char* sql2 =
+    "SELECT module_bmp280, module_dht22, module_anemo, module_girou, "
+    "module_pluvio, module_tension, module_bitvie FROM etatcapteurs WHERE id=1;";
+  if (sqlite3_prepare_v2(db, sql2, -1, &stmt, NULL) == SQLITE_OK &&
+      sqlite3_step(stmt) == SQLITE_ROW) {
+    modules["bmp280"]  = sqlite3_column_int(stmt,0);
+    modules["dht22"]   = sqlite3_column_int(stmt,1);
+    modules["anemo"]   = sqlite3_column_int(stmt,2);
+    modules["girou"]   = sqlite3_column_int(stmt,3);
+    modules["pluvio"]  = sqlite3_column_int(stmt,4);
+    modules["tension"] = sqlite3_column_int(stmt,5);
+    modules["bitvie"]  = sqlite3_column_int(stmt,6);
+  }
+  sqlite3_finalize(stmt);
+
+  String out; out.reserve(256);
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+
+
 void setup() {
  
   Serial.begin(115200);
@@ -273,7 +406,14 @@ void setup() {
     return;
   }
 
+  
+  if (!db_begin()) {
+    Serial.println("❌ DB init KO");
+  } else {
+    Serial.println("✅ DB ouverte");
+  }
 
+  /*
   int rc = sqlite3_open("/spiffs/station.db", &db);
   if (rc != SQLITE_OK) {
     Serial.print("Erreur ouverture base de données : ");
@@ -281,8 +421,9 @@ void setup() {
   } else {
     Serial.println("Base de données ouverte avec succès !");
   }
-
+  */
   Wire.begin();
+  configTime(0, 0, "pool.ntp.org"); // NTP
   if (!rtc.begin()) {
     Serial.println("RTC non détecté !");
     //while (1);
@@ -354,6 +495,59 @@ void setup() {
     // Sert la page index.html depuis SPIFFS
   server.on("/", handleRoot);
   server.on("/data", handleData);
+  server.on("/settime", handleSetTime);
+  server.on("/etatcapteurs", HTTP_GET, handleEtatCapteurs);  // [NOUVEAU]
+  server.serveStatic("/images", SPIFFS, "/images");
+
+
+  server.on("/config", HTTP_GET, []() {
+  File file = SPIFFS.open("/config.html", "r");
+  if (file) {
+    server.streamFile(file, "text/html");
+    file.close();
+  } else {
+    server.send(404, "text/plain", "Page config introuvable");
+  }
+  });
+
+  server.on("/style", HTTP_GET, []() {
+  File file = SPIFFS.open("/style.css", "r");
+  if (file) {
+    server.streamFile(file, "text/html");
+    file.close();
+  } else {
+    server.send(404, "text/plain", "Page config introuvable");
+  }
+  });
+
+    server.on("/infos", HTTP_GET, []() {
+  File file = SPIFFS.open("/infos.html", "r");
+  if (file) {
+    server.streamFile(file, "text/html");
+    file.close();
+  } else {
+    server.send(404, "text/plain", "Page d'informations introuvable");
+  }
+  });
+
+  server.on("/update_config", HTTP_POST, []() {
+  // Récupère les valeurs des cases à cocher (1 si présent, 0 sinon)
+  int bmp280 = server.hasArg("bmp280") ? 1 : 0;
+  int dht22 = server.hasArg("dht22") ? 1 : 0;
+  int anemo = server.hasArg("anemo") ? 1 : 0;
+  int girou = server.hasArg("girou") ? 1 : 0;
+  int pluvio = server.hasArg("pluvio") ? 1 : 0;
+  int tension = server.hasArg("tension") ? 1 : 0;
+  int bitvie = server.hasArg("bitvie") ? 1 : 0;
+  int api = server.hasArg("api") ? 1 : 0;
+
+  // Met à jour la table etatcapteurs (modules) et config (API)
+  // À adapter selon ta structure de base :
+  updateModulesInDB(1, bmp280, dht22, anemo, girou, pluvio, tension, bitvie);
+  updateActivationApiInDB(1, api);
+
+  server.send(200, "text/html", "<h3>Configuration mise à jour !</h3><a href='/config'>Retour</a>");
+  });
 
   // ➝ Ajout d’ElegantOTA
   ElegantOTA.begin(&server);
@@ -367,48 +561,53 @@ void setup() {
     file = root.openNextFile();
   }
 
+  // dans setup(), après avoir initialisé `server` :
+  setupLocalStationApiHandler(server);
+  // fetch immédiat au démarrage
+  startStationInfoBackgroundTask();
+  
 
- 
 }
+
+
 
 void loop() {
     static unsigned long previousTime = 0;  // Temps du dernier traitement
     unsigned long currentTime = millis();  // Temps actuel
+    static unsigned long tDbHealth = 0;    // Ajout de la déclaration de tDbHealth
+    //static unsigned long tPollMods = 0;    // Déclaration de tPollMods
 
-    if (db == nullptr || sqlite3_errcode(db) != SQLITE_OK) {
-    Serial.println("Base de données non disponible !");
-    }
-    //Essais bdd
-    if (db == nullptr) {
-      Serial.println("⚠️ db est null !");
-    } else {
-      Serial.printf("Code SQLite: %d\n", sqlite3_errcode(db));
-    }
-
-    if (!SPIFFS.exists("/spiffs/station.db")) {
-    Serial.println("⚠️ station.db a disparu, tentative de réouverture...");
-    sqlite3_close(db); // au cas où
-    int rc = sqlite3_open("/spiffs/station.db", &db);
-    if (rc != SQLITE_OK) {
-      Serial.printf("❌ Erreur réouverture DB: %s\n", sqlite3_errmsg(db));
-    } else {
-      Serial.println("✅ Base réouverte !");
-    }
-  }
-
-
-
-    sqlite3_close(db); // au cas où
-    int rc = sqlite3_open("/spiffs/station.db", &db);
-    if (rc != SQLITE_OK) {
-      Serial.printf("Erreur réouverture DB: %s\n", sqlite3_errmsg(db));
-    }
-
-   
     // Gestion des requêtes du serveur web
     server.handleClient();
     ElegantOTA.loop();
     
+
+    if (millis() - tDbHealth >= 5000) {       // toutes les 5 s
+      db_reopen_if_needed("/spiffs/station.db");                // réouvre seulement si nécessaire
+      tDbHealth = millis();
+    }
+
+    
+   // [CONSERVÉ] Poll modules (toutes 5 s) + applyModuleChange(...)
+
+    static unsigned long tPollMods = 0;
+    if (millis() - tPollMods >= 5000) {
+      Modules newMods;
+      if (loadModulesFromDB(newMods)) {
+        if (!modulesEqual(newMods, mods)) {
+          // Applique uniquement ce qui change
+          applyModuleChange(mods, newMods);  // old, new
+          mods = newMods;                    // mise à jour de l'état courant
+          Serial.println(F("[CFG] Modules modifiés -> appliqués"));
+        }
+      } else {
+        Serial.println(F("Erreur lors de la lecture des modules."));
+      }
+      tPollMods = millis();
+    }
+
+
+   
     //Gestion activation des modules
     if (updateModuleVariablesFromDB(1)) {
       Serial.println("Activation des modules mis à jour depuis la base !");
@@ -465,6 +664,11 @@ void loop() {
     Serial.print("DateTime = ");
     Serial.println(datetime);
 
+    static unsigned long lastSendEtatStation = 0;
+    if (millis() - lastSendEtatStation > 60000) { // toutes les 60 secondes
+        sendLatestEtatStationMeteoToApi();
+        lastSendEtatStation = millis();
+    }
     // Effectuer les tâches toutes les 30 secondes (30000 ms)
     if (currentTime - previousTime >= 30000) {
         previousTime = currentTime;
@@ -658,18 +862,24 @@ void loop() {
           Serial.println("Erreur lors de la mise à jour de l'état des capteurs !");
         }
         
+        // Dans loop(), avant l'envoi à l'API :
+        int activation = 0;
+        if (readActivationApi(activation)) {
+            activation_envoi_api = activation;
+        } else {
+            Serial.println("Erreur lecture activation_envoi_api !");
+        }
+
         // Envoi des données à l'API si activé
-        if(activation_envoi_api == 1)
-        {
-          
-          sendLatestRowToApi(); // ← lit la base et envoie à l’API
-        } else
-        {
-          Serial.println("Envoi des données à l'API désactivé.");
+        if (activation_envoi_api == 1) {
+            sendLatestRowToApi();
+        } else {
+            Serial.println("Envoi des données à l'API désactivé.");
         }
       }
+ 
 
     delay(100);  // Réduit le blocage à 100 ms pour fluidifier les lectures
-}
+  }
 
 

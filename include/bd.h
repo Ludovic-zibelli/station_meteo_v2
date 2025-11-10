@@ -28,3 +28,16 @@ bool updateTensions(
 bool updateEtatCapteurs(int id,
                         int capteur_dht22, int capteur_bmp280, int capteur_pluvio,
                         int capteur_girou, int capteur_anemo, float tension_batterie, float tension_solaire);
+
+
+bool updateModulesInDB(int id,
+                       int module_bmp280,
+                       int module_dht22,
+                       int module_anemo,
+                       int module_girou,
+                       int module_pluvio,
+                       int module_tension,
+                       int module_bitvie);
+
+bool updateActivationApiInDB(int id, int activation_envoi_api);
+
