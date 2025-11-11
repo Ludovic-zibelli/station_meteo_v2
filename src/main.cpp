@@ -14,12 +14,13 @@
 //Stockage des données
 #include "SPIFFS.h"
 
+
 //Serveur web
 #include <WiFi.h>
 #include "ElegantOTA.h"
 #include <WebServer.h>
 #include <ArduinoOTA.h>
-#include <ESPAsyncWebServer.h>
+//#include <ESPAsyncWebServer.h>
 
 //Base de données
 #include "bd.h"
@@ -42,6 +43,30 @@
 RTC_DS1307 rtc;
 
 WebServer server(80);
+
+// --- Helpers HTTP pour WebServer synchrone (SPIFFS) ---
+String contentTypeFor(const String& path) {
+  if (path.endsWith(".html")) return "text/html";
+  if (path.endsWith(".css"))  return "text/css";
+  if (path.endsWith(".js"))   return "application/javascript";
+  if (path.endsWith(".png"))  return "image/png";
+  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+  if (path.endsWith(".gif"))  return "image/gif";
+  if (path.endsWith(".svg"))  return "image/svg+xml";
+  if (path.endsWith(".ico"))  return "image/x-icon";
+  return "application/octet-stream";
+}
+
+void sendWithCache(const String& path) {
+  if (!SPIFFS.exists(path)) {
+    server.send(404, "text/plain", "Not found");
+    return;
+  }
+  File f = SPIFFS.open(path, "r");
+  server.sendHeader("Cache-Control", "public, max-age=2592000, immutable"); // ~30 jours
+  server.streamFile(f, contentTypeFor(path));
+  f.close();
+}
 
 //Variable fonctionement programme
 int compteur;
@@ -149,9 +174,18 @@ void setRTCFromNTP() {
         Serial.println("Erreur NTP");
         return;
     }
-    rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                        timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
-    Serial.println("RTC mis à jour depuis NTP !");
+
+    // Ajuste le RTC avec l'heure locale (incluant heure d'été/hiver)
+    rtc.adjust(DateTime(timeinfo.tm_year + 1900,
+                        timeinfo.tm_mon + 1,
+                        timeinfo.tm_mday,
+                        timeinfo.tm_hour,
+                        timeinfo.tm_min,
+                        timeinfo.tm_sec));
+
+    Serial.printf("RTC mis à jour : %02d/%02d/%04d %02d:%02d:%02d\n",
+                  timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900,
+                  timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 }
 
 void handleSetTime() {
@@ -328,7 +362,8 @@ void connectWifiFromDB() {
       Serial.println(ssid);
 
       WiFi.begin(ssid, password);
-
+      WiFi.setSleep(false);                 // latence et débit meilleurs
+      // WiFi.setTxPower(WIFI_POWER_19_5dBm); // si couverture moyenne (optionnel)
       int retry = 0;
       while (WiFi.status() != WL_CONNECTED && retry < 20) {
         delay(500);
@@ -423,7 +458,7 @@ void setup() {
   }
   */
   Wire.begin();
-  configTime(0, 0, "pool.ntp.org"); // NTP
+  configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org");
   if (!rtc.begin()) {
     Serial.println("RTC non détecté !");
     //while (1);
@@ -492,15 +527,26 @@ void setup() {
      
 
   connectWifiFromDB(); 
-    // Sert la page index.html depuis SPIFFS
-  server.on("/", handleRoot);
-  server.on("/data", handleData);
-  server.on("/settime", handleSetTime);
-  server.on("/etatcapteurs", HTTP_GET, handleEtatCapteurs);  // [NOUVEAU]
-  server.serveStatic("/images", SPIFFS, "/images");
 
+// --- ROUTES HTTP (à mettre DANS setup(), après connectWifiFromDB(), avant server.begin()) ---
+// Routes de base
+server.on("/", handleRoot);
+server.on("/data", handleData);
+server.on("/settime", handleSetTime);
+server.on("/etatcapteurs", HTTP_GET, handleEtatCapteurs);
 
-  server.on("/config", HTTP_GET, []() {
+// NotFound -> sert /images/... avec cache, sinon 404
+server.onNotFound([]() {
+  String uri = server.uri();
+  if (uri.startsWith("/images/")) {
+    sendWithCache(uri);
+    return;
+  }
+  server.send(404, "text/plain", "Not found");
+});
+
+// /config
+server.on("/config", HTTP_GET, []() {
   File file = SPIFFS.open("/config.html", "r");
   if (file) {
     server.streamFile(file, "text/html");
@@ -508,19 +554,23 @@ void setup() {
   } else {
     server.send(404, "text/plain", "Page config introuvable");
   }
-  });
+});
 
-  server.on("/style", HTTP_GET, []() {
-  File file = SPIFFS.open("/style.css", "r");
-  if (file) {
-    server.streamFile(file, "text/html");
-    file.close();
-  } else {
-    server.send(404, "text/plain", "Page config introuvable");
+// /style (MIME + cache)
+server.on("/style", HTTP_GET, []() {
+  const char* path = "/style.css";
+  if (!SPIFFS.exists(path)) {
+    server.send(404, "text/plain", "style.css introuvable");
+    return;
   }
-  });
+  File f = SPIFFS.open(path, "r");
+  server.sendHeader("Cache-Control", "public, max-age=604800, immutable");
+  server.streamFile(f, "text/css");
+  f.close();
+});
 
-    server.on("/infos", HTTP_GET, []() {
+// /infos
+server.on("/infos", HTTP_GET,  [] (){
   File file = SPIFFS.open("/infos.html", "r");
   if (file) {
     server.streamFile(file, "text/html");
@@ -528,32 +578,29 @@ void setup() {
   } else {
     server.send(404, "text/plain", "Page d'informations introuvable");
   }
-  });
+});
 
-  server.on("/update_config", HTTP_POST, []() {
-  // Récupère les valeurs des cases à cocher (1 si présent, 0 sinon)
+// /update_config
+server.on("/update_config", HTTP_POST, []() {
   int bmp280 = server.hasArg("bmp280") ? 1 : 0;
-  int dht22 = server.hasArg("dht22") ? 1 : 0;
-  int anemo = server.hasArg("anemo") ? 1 : 0;
-  int girou = server.hasArg("girou") ? 1 : 0;
+  int dht22  = server.hasArg("dht22")  ? 1 : 0;
+  int anemo  = server.hasArg("anemo")  ? 1 : 0;
+  int girou  = server.hasArg("girou")  ? 1 : 0;
   int pluvio = server.hasArg("pluvio") ? 1 : 0;
-  int tension = server.hasArg("tension") ? 1 : 0;
+  int tension= server.hasArg("tension")? 1 : 0;
   int bitvie = server.hasArg("bitvie") ? 1 : 0;
-  int api = server.hasArg("api") ? 1 : 0;
+  int api    = server.hasArg("api")    ? 1 : 0;
 
-  // Met à jour la table etatcapteurs (modules) et config (API)
-  // À adapter selon ta structure de base :
   updateModulesInDB(1, bmp280, dht22, anemo, girou, pluvio, tension, bitvie);
   updateActivationApiInDB(1, api);
 
-  server.send(200, "text/html", "<h3>Configuration mise à jour !</h3><a href='/config'>Retour</a>");
-  });
+  server.send(200, "text/html",
+              "<h3>Configuration mise à jour !</h3><a href='/config'>Retour</a>");
+});
 
-  // ➝ Ajout d’ElegantOTA
-  ElegantOTA.begin(&server);
-
-  server.begin();
-
+// OTA
+ElegantOTA.begin(&server);
+server.begin();
   File root = SPIFFS.open("/");
   File file = root.openNextFile();
   while (file) {
