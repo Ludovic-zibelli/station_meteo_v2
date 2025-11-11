@@ -89,4 +89,16 @@ struct EtatStationMeteo;
 bool readLatestEtatStationMeteo(EtatStationMeteo& out);
 bool readLatestEtatCapteurs(EtatCapteurs& out);
 
+// ----- Config application (WiFi + API) -----
+struct AppConfig {
+  String ssid_wifi;
+  String pass_wifi;
+  String ip_wifi;     // si tu veux l'afficher
+  String id_station;  // en String (compatible "2.0"), mets int si ta colonne est INTEGER
+  String adresse_api;
+  String token;
+  int    activation_envoi_api; // 0/1
+};
+
+bool readAppConfig(AppConfig& out);        // SELECT ... FROM config WHERE id=1
 

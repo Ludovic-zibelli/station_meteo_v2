@@ -35,6 +35,8 @@
 //Envoi des donnees 
 #include "api.h"
 #include "db_read.h"
+#include "bd.h"
+
 
 
 
@@ -346,7 +348,7 @@ void handleData() {
   server.send(200, "application/json", json);
 }
 
-
+/*
 void connectWifiFromDB() {
   sqlite3_stmt *stmt;
   const char *sql = "SELECT ssid_wifi, pass_wifi FROM config ORDER BY id DESC LIMIT 1;";
@@ -379,6 +381,33 @@ void connectWifiFromDB() {
       }
     }
     sqlite3_finalize(stmt);
+  }
+}
+*/
+
+
+
+void connectWifiFromDB() {
+  AppConfig cfg;
+  if (!readAppConfig(cfg)) {
+    Serial.println("❌ Lecture config Wi‑Fi échouée");
+    return;
+  }
+  Serial.printf("Connexion Wi‑Fi à : %s\n", cfg.ssid_wifi.c_str());
+  WiFi.begin(cfg.ssid_wifi.c_str(), cfg.pass_wifi.c_str());
+  WiFi.setSleep(false);
+
+  int retry = 0;
+  while (WiFi.status() != WL_CONNECTED && retry < 20) {
+    delay(500);
+    Serial.print(".");
+    retry++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ Connecté au Wi‑Fi !");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\n❌ Impossible de se connecter au Wi‑Fi");
   }
 }
 
@@ -435,6 +464,10 @@ void setup() {
   Serial.begin(115200);
   
   
+  // Mode AP pour configuration 
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("meteospit_Config", "12345678"); // SSID et mot de pas
+
   //Connection au wifi 
   if (!SPIFFS.begin(true)) {
     Serial.println("Erreur SPIFFS !");
@@ -447,7 +480,7 @@ void setup() {
   } else {
     Serial.println("✅ DB ouverte");
   }
-
+  apiRefreshConfigFromDb();   // charge API_URL, API_KEY, STATION_ID, etc.
   /*
   int rc = sqlite3_open("/spiffs/station.db", &db);
   if (rc != SQLITE_OK) {
@@ -596,6 +629,59 @@ server.on("/update_config", HTTP_POST, []() {
 
   server.send(200, "text/html",
               "<h3>Configuration mise à jour !</h3><a href='/config'>Retour</a>");
+});
+
+
+// GET /config.json
+server.on("/config.json", HTTP_GET, []() {
+  AppConfig c;
+  if (!readAppConfig(c)) {
+    server.send(500, "application/json", "{\"error\":\"db read failed\"}");
+    return;
+  }
+  StaticJsonDocument<512> doc;
+  doc["ssid_wifi"]  = c.ssid_wifi;
+  doc["pass_wifi"]  = String(c.pass_wifi.length(), '*'); // masque
+  doc["IP_WIFI"]    = c.ip_wifi;
+  doc["ID_STATION"] = c.id_station;
+  doc["adresse_api"]= c.adresse_api;
+  doc["token"]      = c.token;
+  doc["activation_envoi_api"] = c.activation_envoi_api;
+  String out; serializeJson(doc, out);
+  server.send(200, "application/json", out);
+});
+
+// POST /config.save
+server.on("/config.save", HTTP_POST, []()  {
+    AppConfig cur;
+    readAppConfig(cur); // récupère l'ancien mdp si vide
+
+    AppConfig n = cur;
+    if (server.hasArg("ssid_wifi"))    n.ssid_wifi    = server.arg("ssid_wifi");
+    if (server.hasArg("pass_wifi"))  { String p = server.arg("pass_wifi"); if (p != "") n.pass_wifi = p; }
+    if (server.hasArg("IP_WIFI"))      n.ip_wifi      = server.arg("IP_WIFI");
+    if (server.hasArg("ID_STATION"))   n.id_station   = server.arg("ID_STATION");
+    if (server.hasArg("adresse_api"))  n.adresse_api  = server.arg("adresse_api");
+    if (server.hasArg("token"))        n.token        = server.arg("token");
+    if (server.hasArg("activation_envoi_api"))
+                                       n.activation_envoi_api = server.arg("activation_envoi_api").toInt();
+
+    if (!updateAppConfig(n)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"db update failed\"}");
+        return;
+    }
+
+    // Rafraîchit les variables runtime
+    apiRefreshConfigFromDb();
+
+    // Reconnexion Wi‑Fi si SSID/MdP ont changé
+    if (n.ssid_wifi != cur.ssid_wifi || n.pass_wifi != cur.pass_wifi) {
+        WiFi.disconnect(true, true);
+        delay(300);
+        WiFi.begin(n.ssid_wifi.c_str(), n.pass_wifi.c_str());
+    }
+
+    server.send(200, "application/json", "{\"ok\":true}");
 });
 
 // OTA

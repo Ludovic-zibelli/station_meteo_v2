@@ -174,3 +174,28 @@ bool readLatestEtatCapteurs(EtatCapteurs& out) {
     sqlite3_finalize(stmt);
     return ok;
 }
+
+
+bool readAppConfig(AppConfig& c) {
+  const char* sql =
+    "SELECT ssid_wifi, pass_wifi, IP_WIFI, ID_STATION, adresse_api, token, activation_envoi_api "
+    "FROM config WHERE id=1 LIMIT 1;";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    // Serial.printf("Prepare failed: %s\n", sqlite3_errmsg(db));
+    return false;
+  }
+  bool ok = false;
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    c.ssid_wifi  = (const char*)sqlite3_column_text(stmt, 0);
+    c.pass_wifi  = (const char*)sqlite3_column_text(stmt, 1);
+    c.ip_wifi    = (const char*)sqlite3_column_text(stmt, 2);
+    c.id_station = (const char*)sqlite3_column_text(stmt, 3);
+    c.adresse_api= (const char*)sqlite3_column_text(stmt, 4);
+    c.token      = (const char*)sqlite3_column_text(stmt, 5);
+    c.activation_envoi_api = sqlite3_column_int(stmt, 6);
+    ok = true;
+  }
+  sqlite3_finalize(stmt);
+  return ok;
+}

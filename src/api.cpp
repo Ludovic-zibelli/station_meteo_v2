@@ -9,6 +9,60 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+
+// Config API dynamique
+static AppConfig g_apiCfg;
+static unsigned long g_apiCfgLoadedMs = 0;
+static const unsigned long API_CFG_TTL_MS = 60 * 1000UL;
+
+
+
+// === Variables "runtime" avec les mêmes noms qu'avant ===
+String API_URL;                   // https://.../api/stationdirect/{STATION_ID}
+String API_KEY;                   // X-API-KEY depuis DB
+String API_URL_ETATSTATION;       // https://.../api/etatstationmeteo/1  (ID=1 imposé)
+int    STATION_ID = 0;            // entier (ID_STATION parsé)
+String STATION_METEOS_PATH;       // api/station_meteos/{STATION_ID}
+String API_URL_STATION_METEOS;    // https://.../api/station_meteos/{STATION_ID}
+
+// utilitaire
+static String rtrimSlash(String s){ while (s.endsWith("/")) s.remove(s.length()-1); return s; }
+
+// Appeler cette fonction AU DÉMARRAGE et APRÈS /config.save
+void apiRefreshConfigFromDb() {
+  AppConfig c;
+  if (!readAppConfig(c)) {         // lit table config id=1  [1](https://shiftup-my.sharepoint.com/personal/u058770_inetpsa_com/Documents/Fichiers%20Microsoft%20Copilot%20Chat/api.cpp)
+    Serial.println("[API] readAppConfig() KO");
+    return;
+  }
+
+  // Token
+  API_KEY = c.token;
+
+  // ID station en ENTIER (si "2.0" en base -> 2)
+  STATION_ID = String(c.id_station).toInt();
+
+  // Base URL genre "https://www.meteospit.fr/api"
+  String base = rtrimSlash(c.adresse_api);
+
+  // Endpoints construits
+  API_URL                 = base + "/stationdirect/"     + String(STATION_ID);
+  API_URL_ETATSTATION     = base + "/etatstationmeteo/1";                 // ID = 1 imposé
+  API_URL_STATION_METEOS  = base + "/station_meteos/"    + String(STATION_ID);
+  STATION_METEOS_PATH     = "api/station_meteos/"        + String(STATION_ID);
+
+  Serial.printf("[API] cfg ok: STATION_ID=%d\n", STATION_ID);
+}
+
+
+// S'assure que la config est chargée; la recharge si plus vieille que TTL
+bool ensureApiConfig() {
+    apiRefreshConfigFromDb(); // exécute la mise à jour
+    return true; // indique que tout s'est bien passé
+}
+
+
+/*
 // Remplace par les tiens
 static const char* API_URL  = "https://www.meteospit.fr/api/stationdirect/2";
 static const char* API_KEY  = "2878ece33344e4f6d9e1105c0362f0671d9432fb4d997023acb734f4c6e6793a";
@@ -16,7 +70,7 @@ static const char* API_URL_ETATSTATION = "https://www.meteospit.fr/api/etatstati
 static const int   STATION_ID = 2;
 static const char* STATION_METEOS_PATH = "api/station_meteos/2";
 static const char* API_URL_STATION_METEOS = "https://www.meteospit.fr/api/station_meteos/2";
-
+*/
 // utiliser la structure et l'extern définis dans include/api.h
 // (supprimer la struct StationInfo locale et la variable static ci‑dessous)
 
@@ -62,26 +116,30 @@ static String frenchDecimal(float v, uint8_t digits = 1) {
 
 // Lis la dernière ligne de station_direct et l’envoie à l’API
 bool sendLatestRowToApi() {
-  const char *remote = "https://api.exemple/rows"; // <-- ton endpoint réel
+  if (API_URL.isEmpty()) {  // config pas encore chargée
+    recordPushResult(g_lastPushRow, "cfg", -10, "No API config");
+    return false;
+  }
   if (WiFi.status() != WL_CONNECTED) {
-    recordPushResult(g_lastPushRow, remote, -2, "No WiFi");
+    recordPushResult(g_lastPushRow, API_URL.c_str(), -2, "No WiFi");  // <-- .c_str()
     return false;
   }
 
   String payload = buildStationJsonPayload();
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
-  if (!http.begin(client, remote)) {
-    recordPushResult(g_lastPushRow, remote, -1, "http.begin() failed");
+  if (!http.begin(client, API_URL)) {
+    recordPushResult(g_lastPushRow, API_URL.c_str(), -1, "http.begin() failed");
     return false;
   }
-
   http.addHeader("Content-Type", "application/json");
-  int code = http.PUT(payload);           // ou POST selon ton API
+  http.addHeader("Accept", "application/json");
+  if (API_KEY.length()) http.addHeader("X-API-KEY", API_KEY);
+
+  int code = http.PUT(payload);
   String resp = http.getString();
   http.end();
-
-  recordPushResult(g_lastPushRow, remote, code, resp);
+  recordPushResult(g_lastPushRow, API_URL.c_str(), code, resp);
   return (code >= 200 && code < 300);
 }
 
@@ -95,11 +153,19 @@ bool sendEtatCapteursToApi(
     String logDateAnemo, String logAnemo,
     String logDatePluvio, String logPluvio
 ) {
-    if (WiFi.status() != WL_CONNECTED) {
-        recordPushResult(g_lastPushEtat, API_URL, -2, "No WiFi");
+    // 0) Vérif config API en mémoire (chargée via apiRefreshConfigFromDb())
+    if (API_URL_ETATSTATION.isEmpty() || STATION_METEOS_PATH.isEmpty()) {
+        recordPushResult(g_lastPushEtat, "cfg", -10, "No API config");
         return false;
     }
 
+    // 1) Vérif Wi‑Fi
+    if (WiFi.status() != WL_CONNECTED) {
+        recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), -2, "No WiFi");
+        return false;
+    }
+
+    // 2) Construire le payload JSON
     StaticJsonDocument<512> doc;
     doc["moduleBmp280"]   = mods.bmp280;
     doc["moduleDht22"]    = mods.dht22;
@@ -108,12 +174,15 @@ bool sendEtatCapteursToApi(
     doc["modulePluvio"]   = mods.pluvio;
     doc["moduleTension"]  = mods.tension;
     doc["moduleBitvie"]   = mods.bitvie;
+
     doc["capteurDht22"]   = etat_dht22;
     doc["capteurBmp280"]  = etat_bmp280;
     doc["capteurPluvio"]  = etat_pluvio;
     doc["capteurGirou"]   = etat_girou;
     doc["capteurAnemo"]   = etat_anemo;
+
     doc["ghost"]          = ghost;
+
     doc["logDateBmp280"]  = logDateBmp280;
     doc["logBmp280"]      = logBmp280;
     doc["logDateDht22"]   = logDateDht22;
@@ -126,47 +195,54 @@ bool sendEtatCapteursToApi(
     doc["logAnemo"]       = logAnemo;
     doc["logDatePluvio"]  = logDatePluvio;
     doc["logPluvio"]      = logPluvio;
-    doc["stationMeteo"]   = "/api/station_meteos/2";
+
+    // ⚠️ IMPORTANT : utiliser le chemin relatif dynamique
+    // ex : "/api/station_meteos/2"
+    doc["stationMeteo"]   = String("/") + STATION_METEOS_PATH;
 
     String payload;
     serializeJson(doc, payload);
 
-    WiFiClientSecure client;
-    client.setInsecure();
+    // 3) Appel HTTP
+    WiFiClientSecure client; 
+    client.setInsecure(); // garde comme dans ton code
     HTTPClient http;
-    if (!http.begin(client, API_URL)) {
-        recordPushResult(g_lastPushEtat, API_URL, -1, "http.begin() failed");
+
+    if (!http.begin(client, API_URL_ETATSTATION)) { // URL avec ID fixé à 1 côté serveur
+        recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), -1, "http.begin() failed");
         return false;
     }
 
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Accept", "application/json");
-    http.addHeader("X-API-KEY", API_KEY);
+    if (API_KEY.length()) {
+        http.addHeader("X-API-KEY", API_KEY); // token issu de la DB
+    }
 
     int code = http.PUT(payload);
     String resp = http.getString();
     http.end();
 
-    // ✅ Enregistre le résultat
-    recordPushResult(g_lastPushEtat, API_URL, code, resp);
+    // 4) Journaliser le résultat pour tes handlers/local info
+    recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), code, resp);
     g_lastPushHttpCode = code;
     g_lastPushHttpBody = resp;
-    g_lastPushMillis = millis();
+    g_lastPushMillis   = millis();
 
-    return code >= 200 && code < 300;
+    return (code >= 200 && code < 300);
 }
 
 bool sendLatestEtatStationMeteoToApi() {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("[API] WiFi non connecté");
-        recordPushResult(g_lastPushEtat, API_URL_ETATSTATION, -2, "No WiFi");
+        recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), -2, "No WiFi");
         return false;
     }
 
     EtatCapteurs ec;
     if (!readLatestEtatCapteurs(ec)) {
         Serial.println("[API] Impossible de lire etatcapteurs");
-        recordPushResult(g_lastPushEtat, API_URL_ETATSTATION, -3, "Read etatcapteurs failed");
+        recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), -3, "Read etatcapteurs failed");
         return false;
     }
 
@@ -198,7 +274,7 @@ bool sendLatestEtatStationMeteoToApi() {
     HTTPClient http;
     if (!http.begin(client, API_URL_ETATSTATION)) {
         Serial.println("[API] http.begin() a échoué");
-        recordPushResult(g_lastPushEtat, API_URL_ETATSTATION, -1, "http.begin() failed");
+        recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), -1, "http.begin() failed");
         return false;
     }
 
@@ -215,7 +291,7 @@ bool sendLatestEtatStationMeteoToApi() {
     http.end();
 
     // ✅ Enregistre le résultat
-    recordPushResult(g_lastPushEtat, API_URL_ETATSTATION, code, resp);
+    recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), code, resp);
     g_lastPushHttpCode = code;
     g_lastPushHttpBody = resp;
     g_lastPushMillis = millis();
@@ -224,14 +300,17 @@ bool sendLatestEtatStationMeteoToApi() {
 }
 
 bool fetchStationInfoFromRemote() {
+
+  if (API_URL_STATION_METEOS.isEmpty()) return false;
   if (WiFi.status() != WL_CONNECTED) return false;
-  WiFiClientSecure client;
-  client.setInsecure();
+
+  WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
   if (!http.begin(client, API_URL_STATION_METEOS)) return false;
   http.addHeader("Accept", "application/json");
-  http.addHeader("X-API-KEY", API_KEY);
+  if (API_KEY.length()) http.addHeader("X-API-KEY", API_KEY);
   int code = http.GET();
+
   if (code != 200) { http.end(); return false; }
   String body = http.getString();
   http.end();

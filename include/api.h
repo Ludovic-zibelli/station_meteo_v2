@@ -103,5 +103,6 @@ extern PushResult g_lastPushEtat;  // pour sendEtatCapteursToApi()
 bool sendLatestRowToApi();
 bool sendEtatCapteursToApi();
 bool sendLatestEtatStationMeteoToApi();
+void apiRefreshConfigFromDb();
 
 #endif

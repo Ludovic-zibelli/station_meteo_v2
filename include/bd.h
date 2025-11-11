@@ -1,4 +1,5 @@
 #pragma once
+#include "db_read.h"   // pour AppConfig
 
 bool updateStationDirect(
     int id,
@@ -40,4 +41,8 @@ bool updateModulesInDB(int id,
                        int module_bitvie);
 
 bool updateActivationApiInDB(int id, int activation_envoi_api);
+
+
+bool updateAppConfig(const AppConfig& c);  // UPDATE config SET ... WHERE id=1
+
 

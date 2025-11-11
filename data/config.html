@@ -88,6 +88,77 @@
   <p id="lastUpdate" class="mono"></p>
   <button onclick="fetch('/settime')">Synchroniser l'heure (NTP)</button>
 </div>
+<!-- === Formulaire Config Wi‑Fi / API === -->
+<form id="cfgForm" style="margin:12px 0; padding:12px; border:1px solid #ccc; border-radius:8px;">
+  <div style="display:flex; gap:12px; flex-wrap:wrap;">
+    <label style="flex:1 1 260px;">SSID Wi‑Fi
+      <input type="text" name="ssid_wifi" id="ssid_wifi" required style="width:100%;">
+    </label>
+    <label style="flex:1 1 260px;">Mot de passe Wi‑Fi
+      <input type="password" name="pass_wifi" id="pass_wifi" placeholder="(laisser vide pour conserver)" style="width:100%;">
+    </label>
+  </div>
+
+  <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:8px;">
+    <label style="flex:1 1 200px;">IP_WIFI
+      <input type="text" name="IP_WIFI" id="IP_WIFI" placeholder="192.168.1.xx" style="width:100%;">
+    </label>
+    <label style="flex:1 1 200px;">ID_STATION
+      <input type="text" name="ID_STATION" id="ID_STATION" style="width:100%;">
+    </label>
+  </div>
+
+  <label style="display:block; margin-top:8px;">Adresse API
+    <input type="text" name="adresse_api" id="adresse_api" placeholder="https://…/api/" style="width:100%;">
+  </label>
+
+  <label style="display:block; margin-top:8px;">Token
+    <textarea name="token" id="token" rows="3" style="width:100%;"></textarea>
+  </label>
+
+  <label style="display:block; margin-top:8px;">
+    <input type="checkbox" id="activation_envoi_api"> Activer l’envoi à l’API
+  </label>
+
+  <button type="submit" style="margin-top:12px;">Enregistrer</button>
+  <span id="cfgMsg" style="margin-left:8px;"></span>
+</form>
+
+<script>
+(async function(){
+  // Charger la config depuis /config.json
+  try{
+    const r = await fetch('/config.json');
+    if(!r.ok) throw new Error('Lecture config KO');
+    const c = await r.json();
+    document.getElementById('ssid_wifi').value   = c.ssid_wifi || '';
+    // pass_wifi masqué côté GET -> pour changer, on saisit un nouveau mdp
+    document.getElementById('IP_WIFI').value     = c.IP_WIFI || '';
+    document.getElementById('ID_STATION').value  = c.ID_STATION || '';
+    document.getElementById('adresse_api').value = c.adresse_api || '';
+    document.getElementById('token').value       = c.token || '';
+    document.getElementById('activation_envoi_api').checked = !!c.activation_envoi_api;
+  }catch(e){
+    console.log(e);
+    document.getElementById('cfgMsg').textContent = '❌ Impossible de charger la configuration';
+  }
+
+  // Soumission -> POST /config.save
+  document.getElementById('cfgForm').addEventListener('submit', async (ev)=>{
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    fd.set('activation_envoi_api', document.getElementById('activation_envoi_api').checked ? '1' : '0');
+    const r = await fetch('/config.save', { method:'POST', body: fd });
+    const msg = document.getElementById('cfgMsg');
+    if(r.ok){
+      msg.textContent = '✅ Enregistré. Reconnexion Wi‑Fi si SSID/MdP changés…';
+      setTimeout(()=>location.reload(), 1200);
+    } else {
+      msg.textContent = '❌ Erreur d’enregistrement';
+    }
+  });
+})();
+</script>
   <script>
     async function refreshEtat(){
       try{

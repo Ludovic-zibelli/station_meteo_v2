@@ -169,3 +169,29 @@ bool updateActivationApiInDB(int id, int activation_envoi_api) {
     return true;
 }
 
+// Mise à jour de la configuration de l'application
+bool updateAppConfig(const AppConfig& c) {
+  const char* sql =
+    "UPDATE config SET "
+    "ssid_wifi=?, pass_wifi=?, IP_WIFI=?, ID_STATION=?, adresse_api=?, token=?, activation_envoi_api=? "
+    "WHERE id=1;";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+    // Serial.printf("Prepare failed: %s\n", sqlite3_errmsg(db));
+    return false;
+  }
+
+  // bind 1..7
+  sqlite3_bind_text(stmt, 1, c.ssid_wifi.c_str(),   -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 2, c.pass_wifi.c_str(),   -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 3, c.ip_wifi.c_str(),     -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 4, c.id_station.c_str(),  -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 5, c.adresse_api.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 6, c.token.c_str(),       -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int (stmt, 7, c.activation_envoi_api);
+
+  bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_finalize(stmt);
+  return ok;
+}
+
