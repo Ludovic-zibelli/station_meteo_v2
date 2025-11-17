@@ -13,6 +13,10 @@ static unsigned long g_dhtWarmupUntil = 0;
 static bool g_dhtReady = false;
 
 
+// Offsets configurables
+float humidityOffset = 40.0;   // Corrige l'humidité
+float temperatureOffset = 0.0; // Corrige la température
+
 bool dhtStatus = false; 
 
 void initDHT() {
@@ -43,16 +47,20 @@ bool isDHTReady() {
 
 
 
+
 float getTemperature() {
     if (!dhtStatus) return -999.0;
     float temp = dht.readTemperature();
-    return isnan(temp) ? -999.0 : temp;
+    return isnan(temp) ? -999.0 : temp + temperatureOffset;
 }
+
+
 
 float getHumidity() {
     if (!dhtStatus) return -999.0;
     float hum = dht.readHumidity();
-    return isnan(hum) ? -999.0 : hum;
+    return isnan(hum) ? -999.0 : hum - humidityOffset;
 }
+
 
 

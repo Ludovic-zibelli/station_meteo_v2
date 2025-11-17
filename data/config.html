@@ -71,17 +71,19 @@
 
   <table class="state" id="etat">
     <thead>
-      <tr><th>Module</th><th>Activation</th><th>État</th><th>Détails</th></tr>
+      <tr><th>Module</th><th>Activation</th><th>État</th><th>Détails</th><th>Configuration des capteurs</th><th>Configurations</th></tr>
     </thead>
     <tbody>
-      <tr><td>BMP280</td><td id="m_bmp280">?</td><td id="e_bmp280">?</td><td class="mono" id="d_bmp280">—</td></tr>
-      <tr><td>DHT22</td> <td id="m_dht22">?</td> <td id="e_dht22">?</td>  <td class="mono" id="d_dht22">—</td></tr>
-      <tr><td>Anémomètre</td><td id="m_anemo">?</td><td id="e_anemo">?</td><td class="mono" id="d_anemo">—</td></tr>
-      <tr><td>Girouette</td><td id="m_girou">?</td><td id="e_girou">?</td><td class="mono" id="d_girou">—</td></tr>
-      <tr><td>Pluviomètre</td><td id="m_pluvio">?</td><td id="e_pluvio">?</td><td class="mono" id="d_pluvio">—</td></tr>
+      <tr><td>BMP280</td><td id="m_bmp280">?</td><td id="e_bmp280">?</td><td class="mono" id="d_bmp280">—</td><td><button class="toggle-btn" data-sensor="bmp280">Activer</button></td><td></td></tr>
+      <tr><td>DHT22</td> <td id="m_dht22">?</td> <td id="e_dht22">?</td>  <td class="mono" id="d_dht22">—</td><td><button class="toggle-btn" data-sensor="dht22">Activer</button></td><td></td></tr>
+      <tr><td>SHT40</td> <td id="m_sht40">?</td> <td id="e_sht40">?</td>  <td class="mono" id="d_sht40">—</td><td><button class="toggle-btn" data-sensor="sht40">Activer</button></td><td></td></tr>
+      <tr><td>Anémomètre</td><td id="m_anemo">?</td><td id="e_anemo">?</td><td class="mono" id="d_anemo">—</td><td><button class="toggle-btn" data-sensor="anemo">Activer</button></td><td></td></tr>
+      <tr><td>Girouette</td><td id="m_girou">?</td><td id="e_girou">?</td><td class="mono" id="d_girou">—</td><td><button class="toggle-btn" data-sensor="girou">Activer</button></td><td></td></tr>
+      <tr><td>Pluviomètre</td><td id="m_pluvio">?</td><td id="e_pluvio">?</td><td class="mono" id="d_pluvio">—</td><button class="toggle-btn" data-sensor="pluvio">Activer</button><td></td><td></td></tr>
       <tr><td>Tensions</td><td id="m_tension">?</td><td>—</td>
-          <td class="mono">Solaire: <span id="vsol">—</span> V &nbsp;|&nbsp; Batterie: <span id="vbat">—</span> V</td></tr>
-      <tr><td>Bitvie</td><td id="m_bitvie">?</td><td>—</td><td class="mono">—</td></tr>
+          <td class="mono">Solaire: <span id="vsol">—</span> V &nbsp;|&nbsp; Batterie: <span id="vbat">—</span> V</td><td></td><td></td></tr>
+      <tr><td>Bitvie</td><td id="m_bitvie">?</td><td>—</td><td class="mono">—</td><td><button class="toggle-btn" data-sensor="bitvie">Activer</button></td><td></td></tr>
+      <tr><td>API</td><td id="mod-api">?</td><td id="etat-api">—</td><td class="mono">—</td><td><button class="toggle-btn" data-sensor="api">Activer</button></td><td></td></tr>
     </tbody>
   </table>
 
@@ -160,6 +162,41 @@
 })();
 </script>
   <script>
+    async function majEtatCapteurs() {
+      try {
+        const r = await fetch('/etatcapteurs', { cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        const m = data.modules || {};
+        const e = data.etat || {};
+        const onOff = v => v ? '<span class="toggle-btn active">ON</span>'
+                            : '<span class="toggle-btn">OFF</span>';
+
+        // ... ici tu peux aussi mettre à jour les autres lignes (BMP280, DHT22, etc.)
+        // Ligne API
+        document.getElementById('mod-api').innerHTML = onOff(m.api ?? 0);
+        document.getElementById('etat-api').textContent = (m.api ? 'Activée' : 'Désactivée');
+      } catch (err) {
+        console.error('majEtatCapteurs:', err);
+      }
+    }
+    document.addEventListener('DOMContentLoaded', majEtatCapteurs);
+    setInterval(majEtatCapteurs, 10000);
+    function attachToggleListeners() {
+      document.querySelectorAll('.toggle-btn').forEach(button => {
+        button.addEventListener('click', () => {
+          button.classList.toggle('active');
+          if (button.classList.contains('active')) {
+            button.textContent = 'Désactiver';
+            updateSensorConfig(button.dataset.sensor, 1);
+          } else {
+            button.textContent = 'Activer';
+            updateSensorConfig(button.dataset.sensor, 0);
+          }
+        });
+      });
+    }
+
     async function refreshEtat(){
       try{
         const r = await fetch('/etatcapteurs',{cache:'no-store'});
@@ -179,6 +216,7 @@
           set('m_pluvio', badge(!!j.modules.pluvio));
           set('m_tension',badge(!!j.modules.tension));
           set('m_bitvie', badge(!!j.modules.bitvie));
+          set('m_sht40',  badge(!!j.modules.sht40));
         }
 
         // États capteurs + tensions
@@ -188,6 +226,7 @@
           set('e_anemo',  badge(!!j.etat.anemo));
           set('e_girou',  badge(!!j.etat.girou));
           set('e_pluvio', badge(!!j.etat.pluvio));
+          set('e_sht40',  badge(!!j.etat.sht40));
 
           // Détails texte (facultatif)
           set('d_bmp280', j.etat.bmp280 ? 'Capteur OK' : 'Aucune lecture valide');
@@ -195,6 +234,7 @@
           set('d_anemo',  j.etat.anemo  ? 'Pulses détectés' : 'Aucun top');
           set('d_girou',  j.etat.girou  ? 'Position détectée' : 'Indéterminée');
           set('d_pluvio', j.etat.pluvio ? 'Bascule détectée' : 'Aucune bascule');
+          set('d_sht40',  j.etat.sht40  ? 'Capteur OK' : 'Aucune lecture valide');
 
           // Tensions
           if (typeof j.etat.tension_solaire === 'number')
@@ -210,11 +250,130 @@
         console.error(e);
       }
     }
+    attachToggleListeners();
     setInterval(refreshEtat, 2000);
     refreshEtat();
+
+      document.addEventListener('DOMContentLoaded', () => {
+      document.querySelectorAll('.toggle-btn').forEach(button => {
+        button.addEventListener('click', () => {
+          button.classList.toggle('active');
+          if (button.classList.contains('active')) {
+            button.textContent = 'Activer';
+            updateSensorConfig(button.dataset.sensor, 1);
+          } else {
+            button.textContent = 'Désactiver';
+            updateSensorConfig(button.dataset.sensor, 0);
+          }
+        });
+      });
+    });
+
+
+    function updateSensorConfig(sensor, status) {
+      fetch('/update_config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `${sensor}=${status}`
+      }).catch(err => console.error('Erreur fetch:', err));
+    }
+
+    /** Liste des clés attendues par /update_config */
+const MODULES = ["bmp280","dht22","sht40","anemo","girou","pluvio","tension","bitvie","api"];
+let state = {}; // {key: 0|1}
+
+/** Rend un bouton ON/OFF uniforme */
+function renderBtn(key, on) {
+  const cls = on ? 'toggle-btn active' : 'toggle-btn';
+  const label = on ? 'ON' : 'OFF';
+  return `<button type="button" class="${cls}" data-key="${key}">${label}</button>`;
+}
+
+/** Applique l'état courant à l'UI (tous les boutons) */
+function applyStateToUI() {
+  for (const k of MODULES) {
+    const cell = document.getElementById('mod-' + k);
+    if (!cell) continue;
+    cell.innerHTML = renderBtn(k, !!state[k]);
+  }
+  // Optionnel: mets à jour la colonne "Etat" si tu veux (e.g., e.bmp280)
+}
+
+/** Charge l'état depuis /etatcapteurs */
+async function loadState() {
+    const r = await fetch('/etatcapteurs', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const m = (data && data.modules) ? data.modules : {};
+
+    state = {
+      bmp280: m.bmp280 ? 1 : 0,
+      dht22:  m.dht22 ? 1 : 0,
+      sht40:  m.sht40 ? 1 : 0,
+      anemo:  m.anemo ? 1 : 0,
+      girou:  m.girou ? 1 : 0,
+      pluvio: m.pluvio ? 1 : 0,
+      tension:m.tension ? 1 : 0,
+      bitvie: m.bitvie ? 1 : 0,
+      api:    m.api ? 1 : 0
+    };
+
+    applyStateToUI();
+  }
+
+  /** Envoie l'état complet au backend
+  * IMPORTANT : /update_config considère "champ absent" = 0,
+  * donc on doit envoyer TOUS les modules qui doivent rester à 1.
+  */
+  async function saveState() {
+    const form = new URLSearchParams();
+    if (state.bmp280) form.append('bmp280', '1');
+    if (state.dht22)  form.append('dht22',  '1');
+    if (state.sht40)  form.append('sht40',  '1');
+    if (state.anemo)  form.append('anemo',  '1');
+    if (state.girou)  form.append('girou',  '1');
+    if (state.pluvio) form.append('pluvio', '1');
+    if (state.tension)form.append('tension','1');
+    if (state.bitvie) form.append('bitvie', '1');
+    if (state.api)    form.append('api',    '1');
+
+    const res = await fetch('/update_config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString()
+    });
+    if (!res.ok) throw new Error('POST /update_config ' + res.status);
+  }
+
+  /** Gestion du clic sur n'importe quel bouton toggle */
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.toggle-btn');
+    if (!btn) return;
+
+    const key = btn.dataset.key;
+    if (!MODULES.includes(key)) return;
+
+    // Optimisme : inverse localement
+    state[key] = state[key] ? 0 : 1;
+    applyStateToUI();
+
+    // Enregistre (en postant l'état COMPLET)
+    try {
+      await saveState();
+    } catch (err) {
+      console.error(err);
+      // Retour arrière si échec
+      state[key] = state[key] ? 0 : 1;
+      applyStateToUI();
+      alert("Échec de la sauvegarde de la configuration (" + err.message + ")");
+    }
+  });
+
+  /** Init */
+  document.addEventListener('DOMContentLoaded', loadState);
+
   </script>
 </section>
-
 </body>
 </container-fluid>
 </html>

@@ -30,6 +30,7 @@ bool readLatestStationDirect(StationDirect &out);
 struct Modules {
   int bmp280;
   int dht22;
+  int sht40;   // <-- nouveau
   int anemo;
   int girou;
   int pluvio;
@@ -41,7 +42,7 @@ struct Modules {
 bool readModulesById(int id,
                      int &module_bmp280, int &module_dht22, int &module_anemo,
                      int &module_girou, int &module_pluvio, int &module_tension,
-                     int &module_bitvie);
+                     int &module_bitvie, int &module_sht40);
 
 
 extern int module_bmp280;
@@ -51,6 +52,7 @@ extern int module_girou;
 extern int module_pluvio;
 extern int module_tension;
 extern int module_bitvie;
+extern int module_sht40;
 
 
 struct EtatCapteurs {
@@ -62,6 +64,7 @@ struct EtatCapteurs {
     int module_pluvio;
     int module_tension;
     int module_bitvie;
+    int module_sht40;
     int capteur_dht22;
     int capteur_bmp280;
     int capteur_pluvio;

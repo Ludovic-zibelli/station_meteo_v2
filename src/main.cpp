@@ -10,6 +10,7 @@
 #include "dht22.h"
 #include "pluviometre.h"
 #include "girouette.h"
+#include "sht40.h"
 
 //Stockage des données
 #include "SPIFFS.h"
@@ -121,6 +122,7 @@ int module_girou = 1; //1 = Girouette activée, 0 = désactivée
 int module_pluvio = 1; //1 = Pluviomètre activé, 0 = désactivé
 int module_tension = 1; //1 = Mesure des tensions activée, 0 = désactivée
 int module_bitvie = 1; //1 = Bitvie activé, 0 = désactivé
+int module_sht40 = 0; //1 = SHT40 activé, 0 = désactivé
 
 
 
@@ -200,12 +202,13 @@ bool loadModulesFromDB(Modules& out) {
   // (facultatif mais recommandé si tu utilises db_mgr et un serveur async) :
   // DbLock _;
 
-  int mb, md, ma, mg, mp, mt, mv;
-  if (!readModulesById(1, mb, md, ma, mg, mp, mt, mv)) {
+  int mb, md, ma, mg, mp, mt, mv, ms;
+  if (!readModulesById(1, mb, md, ma, mg, mp, mt, mv, ms)) {
     return false;
   }
   out.bmp280 = mb;
   out.dht22  = md;
+  out.sht40  = ms;
   out.anemo  = ma;
   out.girou  = mg;
   out.pluvio = mp;
@@ -218,6 +221,7 @@ bool loadModulesFromDB(Modules& out) {
 static bool modulesEqual(const Modules& a, const Modules& b) {
   return a.bmp280 == b.bmp280 &&
          a.dht22  == b.dht22  &&
+         a.sht40  == b.sht40  &&
          a.anemo  == b.anemo  &&
          a.girou  == b.girou  &&
          a.pluvio == b.pluvio &&
@@ -236,8 +240,16 @@ void applyModuleChange(const Modules& oldM, const Modules& newM) {
       Serial.println(F("[CFG] Anémomètre DÉSACTIVÉ"));
     }
   }
+  
+  if (oldM.sht40 != newM.sht40) {
+      if (newM.sht40) {
+          initSHT40();
+          Serial.println("[CFG] SHT40 ACTIVÉ");
+      } else {
+          Serial.println("[CFG] SHT40 DÉSACTIVÉ");
+      }
+  }
   // ... idem pour pluvio, bmp280, dht22, girouette, tension ...
-
   // Synchronise aussi tes variables globales existantes :
   module_bmp280 = newM.bmp280;
   module_dht22  = newM.dht22;
@@ -246,6 +258,7 @@ void applyModuleChange(const Modules& oldM, const Modules& newM) {
   module_pluvio = newM.pluvio;
   module_tension= newM.tension;
   module_bitvie = newM.bitvie;
+  module_sht40 = newM.sht40;
 }
 
 
@@ -348,44 +361,6 @@ void handleData() {
   server.send(200, "application/json", json);
 }
 
-/*
-void connectWifiFromDB() {
-  sqlite3_stmt *stmt;
-  const char *sql = "SELECT ssid_wifi, pass_wifi FROM config ORDER BY id DESC LIMIT 1;";
-  //WiFi.begin("Freebox-669838","burria52-ejectione-everberata!-vulnerate4");
-
-
-  if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-      const char *ssid = (const char *)sqlite3_column_text(stmt, 0);
-      const char *password = (const char *)sqlite3_column_text(stmt, 1);
-
-      Serial.print("Connexion WiFi à : ");
-      Serial.println(ssid);
-
-      WiFi.begin(ssid, password);
-      WiFi.setSleep(false);                 // latence et débit meilleurs
-      // WiFi.setTxPower(WIFI_POWER_19_5dBm); // si couverture moyenne (optionnel)
-      int retry = 0;
-      while (WiFi.status() != WL_CONNECTED && retry < 20) {
-        delay(500);
-        Serial.print(".");
-        retry++;
-      }
-
-      if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\n✅ Connecté au WiFi !");
-        Serial.println(WiFi.localIP());
-      } else {
-        Serial.println("\n❌ Impossible de se connecter au WiFi");
-      }
-    }
-    sqlite3_finalize(stmt);
-  }
-}
-*/
-
-
 
 void connectWifiFromDB() {
   AppConfig cfg;
@@ -436,10 +411,12 @@ void handleEtatCapteurs() {
   }
   sqlite3_finalize(stmt);
 
+
   // etatcapteurs (modules)
   const char* sql2 =
     "SELECT module_bmp280, module_dht22, module_anemo, module_girou, "
-    "module_pluvio, module_tension, module_bitvie FROM etatcapteurs WHERE id=1;";
+    "module_pluvio, module_tension, module_bitvie, module_sht40 "  // <-- + module_sht40
+    "FROM etatcapteurs WHERE id=1;";
   if (sqlite3_prepare_v2(db, sql2, -1, &stmt, NULL) == SQLITE_OK &&
       sqlite3_step(stmt) == SQLITE_ROW) {
     modules["bmp280"]  = sqlite3_column_int(stmt,0);
@@ -449,8 +426,18 @@ void handleEtatCapteurs() {
     modules["pluvio"]  = sqlite3_column_int(stmt,4);
     modules["tension"] = sqlite3_column_int(stmt,5);
     modules["bitvie"]  = sqlite3_column_int(stmt,6);
+    modules["sht40"]   = sqlite3_column_int(stmt,7);   // <-- nouveau
   }
   sqlite3_finalize(stmt);
+
+  // + Ajouter l'état d'activation de l'API dans la réponse JSON
+  int api_active_flag = 0;
+  if (readActivationApi(api_active_flag)) {           // déjà dispo
+    modules["api"] = api_active_flag;                 // 1 = activée, 0 = désactivée
+  } else {
+    modules["api"] = 0;
+}
+
 
   String out; out.reserve(256);
   serializeJson(doc, out);
@@ -623,8 +610,9 @@ server.on("/update_config", HTTP_POST, []() {
   int tension= server.hasArg("tension")? 1 : 0;
   int bitvie = server.hasArg("bitvie") ? 1 : 0;
   int api    = server.hasArg("api")    ? 1 : 0;
+  int sht40 = server.hasArg("sht40") ? 1 : 0;
 
-  updateModulesInDB(1, bmp280, dht22, anemo, girou, pluvio, tension, bitvie);
+  updateModulesInDB(1, bmp280, dht22, sht40, anemo, girou, pluvio, tension, bitvie);
   updateActivationApiInDB(1, api);
 
   server.send(200, "text/html",
@@ -876,6 +864,16 @@ void loop() {
         }
         Serial.print("État DHT22 : ");
         Serial.println(etat_dht22);
+
+        if (module_sht40 == 1) {
+            float tempSHT = getSHT40Temperature();
+            float humSHT = getSHT40Humidity();
+            if (tempSHT != -999.0 && humSHT != -999.0) {
+                Serial.printf("SHT40 -> Temp: %.2f °C, Hum: %.2f %%\n", tempSHT, humSHT);
+            } else {
+                Serial.println("Erreur lecture SHT40");
+            }
+        }
 
         // Calcul du point de rosée
         float point_de_rosee = calculPointRosee(temp1, humiditer);

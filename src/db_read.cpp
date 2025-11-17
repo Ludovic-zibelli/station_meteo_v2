@@ -52,12 +52,12 @@ bool readLatestStationDirect(StationDirect &out) {
 }
 
 bool readModulesById(int id,
-                     int &module_bmp280, int &module_dht22, int &module_anemo,
-                     int &module_girou, int &module_pluvio, int &module_tension,
-                     int &module_bitvie) {
+                     int &module_bmp280, int &module_dht22, int &module_sht40,
+                     int &module_anemo, int &module_girou, int &module_pluvio,
+                     int &module_tension, int &module_bitvie) {
   const char *sql =
-    "SELECT module_bmp280, module_dht22, module_anemo, module_girou, "
-    "module_pluvio, module_tension, module_bitvie "
+    "SELECT module_bmp280, module_dht22, module_sht40, module_anemo, "
+    "module_girou, module_pluvio, module_tension, module_bitvie "
     "FROM etatcapteurs WHERE id=?;";
 
   sqlite3_stmt *stmt = nullptr;
@@ -68,11 +68,12 @@ bool readModulesById(int id,
   if (sqlite3_step(stmt) == SQLITE_ROW) {
     module_bmp280  = sqlite3_column_int(stmt, 0);
     module_dht22   = sqlite3_column_int(stmt, 1);
-    module_anemo   = sqlite3_column_int(stmt, 2);
-    module_girou   = sqlite3_column_int(stmt, 3);
-    module_pluvio  = sqlite3_column_int(stmt, 4);
-    module_tension = sqlite3_column_int(stmt, 5);
-    module_bitvie  = sqlite3_column_int(stmt, 6);
+    module_sht40   = sqlite3_column_int(stmt, 2);
+    module_anemo   = sqlite3_column_int(stmt, 3);
+    module_girou   = sqlite3_column_int(stmt, 4);
+    module_pluvio  = sqlite3_column_int(stmt, 5);
+    module_tension = sqlite3_column_int(stmt, 6);
+    module_bitvie  = sqlite3_column_int(stmt, 7);
     ok = true;
   }
 
@@ -83,7 +84,7 @@ bool readModulesById(int id,
 bool updateModuleVariablesFromDB(int id) {
   const char *sql =
     "SELECT module_bmp280, module_dht22, module_anemo, module_girou, "
-    "module_pluvio, module_tension, module_bitvie "
+    "module_pluvio, module_tension, module_bitvie, module_sht40 "
     "FROM etatcapteurs WHERE id=?;";
 
   sqlite3_stmt *stmt = nullptr;
@@ -99,6 +100,7 @@ bool updateModuleVariablesFromDB(int id) {
     module_pluvio  = sqlite3_column_int(stmt, 4);
     module_tension = sqlite3_column_int(stmt, 5);
     module_bitvie  = sqlite3_column_int(stmt, 6);
+    module_sht40  = sqlite3_column_int(stmt, 7);
     ok = true;
   }
 
