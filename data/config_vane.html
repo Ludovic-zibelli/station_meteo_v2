@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Station METEOSPIT.fr ESP32 — Girouette (live)</title>
+  <style>
+    :root {
+      --bg: #0f172a;          /* slate-900 */
+      --panel: #111827;       /* gray-900 */
+      --panel-2: #0b1220;     /* deeper */
+      --text: #e5e7eb;        /* gray-200 */
+      --muted: #9ca3af;       /* gray-400 */
+      --accent: #22d3ee;      /* cyan-400 */
+      --ok: #10b981;          /* emerald-500 */
+      --ko: #ef4444;          /* red-500 */
+      --card-border: #1f2937; /* gray-800 */
+      --on: #22c55e;          /* green-500 */
+      --off: #6b7280;         /* gray-500 */
+      --pin: #0ea5e9;         /* sky-500 */
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Noto Sans', 'Helvetica Neue', Arial, 'Apple Color Emoji', 'Segoe UI Emoji'; background: linear-gradient(180deg, var(--bg), #030712 60%); color: var(--text); }
+
+    header { position: sticky; top:0; z-index: 20; background: rgba(8, 13, 23, 0.7); backdrop-filter: blur(8px); border-bottom: 1px solid var(--card-border); }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 0 16px; }
+    .topbar { display:flex; align-items:center; gap:16px; padding: 12px 0; }
+    .logo { display:flex; align-items:center; gap:10px; text-decoration:none; color: var(--text); }
+    .logo img { height: 36px; width:auto; }
+    .site-title { font-weight: 600; letter-spacing: 0.2px; }
+    nav { margin-left:auto; display:flex; gap:12px; }
+    nav a { color: var(--text); text-decoration:none; padding:8px 12px; border-radius:8px; }
+    nav a:hover { background: #0b1220; }
+
+    main.wrap { padding: 24px 16px; }
+    h1 { font-size: 1.35rem; margin: 0 0 4px 0; }
+    .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 20px; }
+
+    .grid { display:grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+    .card { background: linear-gradient(180deg, var(--panel), var(--panel-2)); border:1px solid var(--card-border); border-radius: 12px; padding: 16px; }
+    .card h2 { font-size: 1.05rem; margin-top:0; margin-bottom: 10px; }
+
+    /* Pins grid */
+    .pins { display:grid; grid-template-columns: repeat(8, 1fr); gap: 8px; }
+    .pin { border:1px dashed var(--card-border); border-radius: 8px; padding:10px; text-align:center; }
+    .pin .name { font-weight:600; color: var(--pin); }
+    .led { width:10px; height:10px; border-radius:999px; display:inline-block; margin-right:6px; vertical-align:middle; }
+    .state { font-variant-numeric: tabular-nums; }
+    .on .led { background: var(--on); box-shadow: 0 0 8px var(--on); }
+    .off .led { background: var(--off); opacity: 0.8; }
+    .raw { color: var(--muted); font-size: 0.85rem; }
+
+    /* Compass */
+    .compass-wrap { display:flex; align-items:center; justify-content:center; }
+    .compass { width: 260px; height: 260px; border-radius: 50%; border: 1px solid var(--card-border); background: radial-gradient(120px, #0b1220 60%, #0f172a); position: relative; margin: 0 auto; }
+    .compass .center { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:10px; height:10px; border-radius:999px; background:#fff; }
+    .needle { position:absolute; left:50%; top:50%; transform-origin: 50% 50%; transform: translate(-50%,-50%) rotate(0deg); transition: transform 150ms linear; }
+    .needle svg { width: 210px; height: 210px; }
+    .rose { position:absolute; inset:0; display:grid; place-items:center; color: var(--muted); font-size: 0.9rem; }
+    .rose .labels { position: absolute; width: 100%; height: 100%; }
+    .rose .labels div { position:absolute; font-weight:600; }
+    .lbl-n { top:4px; left:50%; transform:translateX(-50%); }
+    .lbl-s { bottom:4px; left:50%; transform:translateX(-50%); }
+    .lbl-e { right:8px; top:50%; transform:translateY(-50%); }
+    .lbl-w { left:8px; top:50%; transform:translateY(-50%); }
+
+    .kv { display:grid; grid-template-columns: 1fr auto; gap: 8px 12px; font-size: 0.95rem; }
+    .kv div:nth-child(odd) { color: var(--muted); }
+    .value { font-variant-numeric: tabular-nums; }
+
+    footer { color: var(--muted); text-align:center; padding: 18px 0 28px; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.8rem; background:#0b1220; border:1px solid var(--card-border); }
+
+    @media (max-width: 980px) { .pins { grid-template-columns: repeat(4, 1fr); } }
+    @media (max-width: 580px) { .pins { grid-template-columns: repeat(2, 1fr); } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap topbar">
+      <a class="logo" href="/config" aria-label="Configuration">
+        <img src="images/logo_meteo_head6.png" alt="Logo" />
+        <span class="site-title">Station METEOSPIT.fr ESP32 — Configuration</span>
+      </a>
+      <nav aria-label="Navigation configuration">
+        <a href="/">Accueil</a>
+        <a href="/config">Configuration</a>
+        <a href="/infos">Info compte Meteospit.fr</a>
+        <a href="/update">Mise à jour</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <h1>🧭 Girouette — Visualisation en direct</h1>
+    <p class="subtitle">Entrées GPIO (N, NE, E, SE, S, SW, W, NW) et angle courant avec rose des vents.</p>
+
+    <div class="grid">
+      <section class="card" style="grid-column: span 7;">
+        <h2>État des entrées</h2>
+        <div class="pins" id="pins">
+          <!-- Pins seront peuplées par JS -->
+        </div>
+      </section>
+
+      <section class="card" style="grid-column: span 5;">
+        <h2>Rose des vents</h2>
+        <div class="compass-wrap">
+          <div class="compass">
+            <div class="rose">
+              <div class="labels">
+                <div class="lbl-n">N</div>
+                <div class="lbl-e">E</div>
+                <div class="lbl-s">S</div>
+                <div class="lbl-w">W</div>
+              </div>
+            </div>
+            <div class="needle" id="needle">
+              <!-- simple aiguille -->
+              <svg viewBox="0 0 210 210" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <line x1="105" y1="105" x2="105" y2="15" stroke="#22d3ee" stroke-width="3" />
+                <circle cx="105" cy="105" r="4" fill="#fff" />
+              </svg>
+            </div>
+            <div class="center"></div>
+          </div>
+        </div>
+        <div class="kv" style="margin-top:12px;">
+          <div>Angle</div><div class="value" id="angle">—</div>
+          <div>Cardinal</div><div class="value" id="card">—</div>
+          <div>Offset Nord</div><div class="value" id="offset">0°</div>
+          <div>Bouton calibrage</div><div class="value" id="btn_cal">—</div>
+        </div>
+        <p style="margin-top:12px;">
+          <button id="btnCalibrate" style="background:#0b1220;border:1px solid var(--card-border);color:var(--text);padding:8px 12px;border-radius:8px;">Calibrer Nord (API)</button>
+          <span class="badge" style="margin-left:8px;">Ou maintenir le bouton physique 1.5 s</span>
+        </p>
+      </section>
+    </div>
+
+    <p style="margin-top:16px;">
+      <span class="badge">Sous‑page de configuration : /config/vane</span>
+    </p>
+  </main>
+
+  <footer>
+    © METEOSPIT.fr — ESP32
+  </footer>
+
+  <script>
+    const NAMES = ['N','NE','E','SE','S','SW','W','NW'];
+
+    function pinHtml(name, idx){
+      return `<div class="pin" id="pin_${idx}">
+        <div class="state off"><span class="led"></span><span class="name">${name}</span></div>
+        <div class="raw">GPIO: <span id="raw_${idx}">?</span></div>
+      </div>`;
+    }
+
+    function populatePins(){
+      const c = document.getElementById('pins');
+      c.innerHTML = NAMES.map((n,i)=>pinHtml(n,i)).join('');
+    }
+
+    function setPin(idx, active, raw){
+      const pin = document.getElementById('pin_'+idx);
+      if(!pin) return;
+      const state = pin.querySelector('.state');
+      state.classList.toggle('on', !!active);
+      state.classList.toggle('off', !active);
+      pin.querySelector('#raw_'+idx).textContent = String(raw);
+    }
+
+    function setAngle(deg){
+      const needle = document.getElementById('needle');
+      if(!needle) return;
+      const d = (typeof deg === 'number') ? deg : 0;
+      // L'aiguille pointe vers le Nord (0°) en haut -> rotation CSS directe
+      needle.style.transform = `translate(-50%,-50%) rotate(${d}deg)`;
+      document.getElementById('angle').textContent = Number.isFinite(d) ? `${d.toFixed(1)}°` : '—';
+    }
+
+    async function poll(){
+      try{
+        const r = await fetch('/vane/inputs.json', { cache:'no-store' });
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        const j = await r.json();
+        const pins = j?.vane?.pins || [];
+        pins.forEach((p,i)=> setPin(i, !!p.active, p.raw));
+        const angle = j?.vane?.angle;
+        setAngle(typeof angle === 'number' ? angle : NaN);
+        document.getElementById('card').textContent = j?.vane?.card ?? '—';
+        document.getElementById('offset').textContent = (j?.vane?.offset_deg ?? 0).toFixed(1) + '°';
+        document.getElementById('btn_cal').textContent = (j?.vane?.button ? 'appuyé' : 'libre');
+      }catch(e){ console.error('poll vane:', e); }
+    }
+
+    async function calibrate(){
+      try{
+        const r = await fetch('/vane/calibrate', { method:'POST' });
+        const ok = r.ok;
+        if(!ok) throw new Error('HTTP '+r.status);
+        // force refresh
+        poll();
+      }catch(e){ console.error('calibrate:', e); }
+    }
+
+    document.addEventListener('DOMContentLoaded', ()=>{
+      populatePins();
+      poll();
+      setInterval(poll, 300);
+      document.getElementById('btnCalibrate').addEventListener('click', calibrate);
+    });
+  </script>
+</body>
+</html>

@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <sqlite3.h>
 #include "db_read.h"
+#include "bd_mgr.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 // db est ouverte ailleurs
 extern sqlite3 *db;
@@ -29,11 +32,16 @@ bool readStationDirectById(int id, StationDirect &out) {
     "anemometre,girouette,pluviometre,pointderosee,ghost,tpsvie,timestamp,rafale "
     "FROM station_direct WHERE id=?;";
   sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    return false;
+  }
   sqlite3_bind_int(stmt, 1, id);
   bool ok = false;
   if (sqlite3_step(stmt) == SQLITE_ROW) { fillFromStmt(stmt, out); ok = true; }
   sqlite3_finalize(stmt);
+  if (g_dbMutex) xSemaphoreGive(g_dbMutex);
   return ok;
 }
 
@@ -44,10 +52,15 @@ bool readLatestStationDirect(StationDirect &out) {
     "FROM station_direct "
     "ORDER BY datetime(timestamp) DESC, id DESC LIMIT 1;";
   sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    return false;
+  }
   bool ok = false;
   if (sqlite3_step(stmt) == SQLITE_ROW) { fillFromStmt(stmt, out); ok = true; }
   sqlite3_finalize(stmt);
+  if (g_dbMutex) xSemaphoreGive(g_dbMutex);
   return ok;
 }
 
@@ -61,7 +74,11 @@ bool readModulesById(int id,
     "FROM etatcapteurs WHERE id=?;";
 
   sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    return false;
+  }
   sqlite3_bind_int(stmt, 1, id);
 
   bool ok = false;
@@ -78,6 +95,7 @@ bool readModulesById(int id,
   }
 
   sqlite3_finalize(stmt);
+  if (g_dbMutex) xSemaphoreGive(g_dbMutex);
   return ok;
 }
 
@@ -88,7 +106,11 @@ bool updateModuleVariablesFromDB(int id) {
     "FROM etatcapteurs WHERE id=?;";
 
   sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    return false;
+  }
   sqlite3_bind_int(stmt, 1, id);
 
   bool ok = false;
@@ -105,6 +127,7 @@ bool updateModuleVariablesFromDB(int id) {
   }
 
   sqlite3_finalize(stmt);
+  if (g_dbMutex) xSemaphoreGive(g_dbMutex);
   return ok;
 }
 
@@ -114,10 +137,12 @@ bool updateModuleVariablesFromDB(int id) {
 bool readActivationApi(int &activation) {
     const char *sql = "SELECT activation_envoi_api FROM config ORDER BY id DESC LIMIT 1;";
     sqlite3_stmt *stmt = nullptr;
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        Serial.printf("❌ Prepare error (activation_envoi_api): %s\n", sqlite3_errmsg(db));
-        return false;
+      Serial.printf("❌ Prepare error (activation_envoi_api): %s\n", sqlite3_errmsg(db));
+      if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+      return false;
     }
 
     bool ok = false;
@@ -129,6 +154,7 @@ bool readActivationApi(int &activation) {
     }
 
     sqlite3_finalize(stmt);
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
     return ok;
 }
 
@@ -141,7 +167,11 @@ bool readLatestEtatCapteurs(EtatCapteurs& out) {
         "tension_solaire, tension_batterie "
         "FROM etatcapteurs ORDER BY id DESC LIMIT 1;";
     sqlite3_stmt *stmt = nullptr;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+      if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+      return false;
+    }
     bool ok = false;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         out.id                = sqlite3_column_int(stmt, 0);
@@ -174,6 +204,7 @@ bool readLatestEtatCapteurs(EtatCapteurs& out) {
         ok = true;
     }
     sqlite3_finalize(stmt);
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
     return ok;
 }
 
@@ -183,8 +214,9 @@ bool readAppConfig(AppConfig& c) {
     "SELECT ssid_wifi, pass_wifi, IP_WIFI, ID_STATION, adresse_api, token, activation_envoi_api "
     "FROM config WHERE id=1 LIMIT 1;";
   sqlite3_stmt* stmt = nullptr;
+  if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-    // Serial.printf("Prepare failed: %s\n", sqlite3_errmsg(db));
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
     return false;
   }
   bool ok = false;
@@ -199,5 +231,6 @@ bool readAppConfig(AppConfig& c) {
     ok = true;
   }
   sqlite3_finalize(stmt);
+  if (g_dbMutex) xSemaphoreGive(g_dbMutex);
   return ok;
 }

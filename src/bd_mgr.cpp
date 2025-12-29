@@ -3,6 +3,9 @@
 sqlite3* db = nullptr;
 SemaphoreHandle_t g_dbMutex = nullptr;
 
+// Déclare la variable globale définie dans main.cpp
+extern volatile bool otaInProgress;
+
 static bool open_db(const char* path) {
   int rc = sqlite3_open(path, &db);
   if (rc != SQLITE_OK) { db = nullptr; return false; }
@@ -15,6 +18,12 @@ static bool open_db(const char* path) {
 }
 
 bool db_begin() {
+  // Ne pas (ré)ouvrir la SPIFFS/DB pendant une OTA
+  if (otaInProgress) {
+    Serial.println("db_begin: OTA in progress, skipping DB open");
+    return false;
+  }
+
   if (!SPIFFS.begin(true)) return false;
   if (!open_db("/spiffs/station.db")) return false;
   if (!g_dbMutex) g_dbMutex = xSemaphoreCreateMutex();
@@ -37,6 +46,12 @@ bool db_exec(const char* sql) {
 }
 
 bool db_reopen_if_needed(const char* path) {
+  // Si une OTA est en cours, ne tentez pas de réouvrir la DB
+  if (otaInProgress) {
+    Serial.println("db_reopen_if_needed: OTA in progress, skipping reopen");
+    return false;
+  }
+
   if (!db || sqlite3_errcode(db) != SQLITE_OK) {
     db_end();
     return open_db(path);

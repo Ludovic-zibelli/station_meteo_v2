@@ -1,0 +1,230 @@
+
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Station METEOSPIT.fr ESP32 — Configuration</title>
+  <style>
+    :root{--bg:#0f172a;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--accent:#22c55e;--danger:#ef4444;--link:#60a5fa;--line:#1f2937}
+    html,body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;line-height:1.45;margin:0}
+    a{color:var(--link);text-decoration:none} a:hover{text-decoration:underline}
+    header{display:flex;gap:1rem;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--line);background:#0b1220;position:sticky;top:0;z-index:10}
+    nav a{margin-right:1rem;color:var(--muted)} nav a.active, nav a:hover{color:var(--text)}
+    .wrap{max-width:1100px;margin:0 auto;padding:1rem}
+    h1{font-size:1.5rem;margin:0.25rem 0 0.75rem}
+    h2{font-size:1.1rem;margin:1.25rem 0 0.5rem;color:#d1d5db}
+    .grid{display:grid;grid-template-columns:1fr;gap:1rem}
+    @media(min-width:900px){.grid{grid-template-columns:2fr 1fr}}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:12px; padding:1rem}
+    .muted{color:var(--muted);font-size:.9rem}
+    table{width:100%;border-collapse:collapse}
+    th,td{border-bottom:1px solid var(--line);padding:.55rem .5rem;text-align:left;vertical-align:top}
+    th{color:#d1d5db;font-weight:600}
+    .pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;padding:.15rem .6rem;font-size:.8rem;border:1px solid var(--line)}
+    .ok{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.35);color:#86efac}
+    .ko{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.35);color:#fca5a5}
+    .btn{appearance:none;border:1px solid var(--line);background:#0e1628;color:var(--text);border-radius:10px;padding:.5rem .8rem;cursor:pointer}
+    .btn.primary{background:#0b5; border-color:#094;}
+    .row{display:flex;gap:.5rem;flex-wrap:wrap}
+    .field{display:flex;flex-direction:column;gap:.25rem;margin:.4rem 0;min-width:220px;flex:1}
+    input[type="text"],input[type="password"],input[type="number"],input[type="url"]{background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:.55rem .6rem}
+    .switch{position:relative;display:inline-block;width:44px;height:24px;vertical-align:middle}
+    .switch input{display:none}
+    .slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#334155;border-radius:999px;transition:.18s}
+    .slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.18s}
+    input:checked + .slider{background:#16a34a}
+    input:checked + .slider:before{transform:translateX(20px)}
+    .right{display:flex;justify-content:flex-end}
+    .small{font-size:.85rem}
+    form{margin:0}
+    #toast{position:fixed;right:12px;bottom:12px;background:#0b5;color:white;padding:.6rem .8rem;border-radius:8px;opacity:0;transform:translateY(6px);transition:.2s}
+    #toast.show{opacity:1;transform:translateY(0)}
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <div class="muted small">Station METEOSPIT.fr ESP32</div>
+      <h1>Configuration</h1>
+    </div>
+    <nav aria-label="Navigation principale">
+      <a href="/" >Accueil</a>
+      <a href="/config" class="active">Configuration</a>
+      <a href="/infos">Info compte Meteospit.fr</a>
+      <a href="/update">Mise à jour</a>
+    </nav>
+  </header>
+
+  <div class="wrap grid">
+    <section class="card">
+      <h2>Configuration des modules et API</h2>
+      <div class="muted small" style="margin:.2rem 0 .8rem">État des capteurs (valeurs actuelles)</div>
+      <div style="overflow:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Activation</th>
+              <th>État</th>
+              <th>Détails</th>
+              <th>Configuration</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="rows">
+            <!-- Les lignes seront alimentées par JS depuis /status.json -->
+          </tbody>
+        </table>
+      </div>
+      <div class="muted small" style="margin-top:.6rem">Les interrupteurs de cette table sont en lecture seule. Utilisez les formulaires de configuration à droite pour modifier.</div>
+    </section>
+
+    <aside class="card">
+      <h2>Paramètres réseau & API</h2>
+      <form id="fNetwork" method="post" action="/config/network" class="section">
+        <div class="row">
+          <div class="field">
+            <label for="ssid">SSID Wi‑Fi</label>
+            <input id="ssid" name="ssid" type="text" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="wifipass">Mot de passe Wi‑Fi</label>
+            <input id="wifipass" name="wifi_password" type="password" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="ipwifi">IP_WIFI</label>
+            <input id="ipwifi" name="ip_wifi" type="text" placeholder="dhcp ou 192.168.1.50">
+          </div>
+          <div class="field">
+            <label for="idstation">ID_STATION</label>
+            <input id="idstation" name="id_station" type="text">
+          </div>
+        </div>
+        <div class="right"><button class="btn primary">Enregistrer réseau</button></div>
+      </form>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:1rem 0">
+
+      <form id="fNtp" method="post" action="/config/ntp" class="section">
+        <h2>Synchroniser l’heure (NTP)</h2>
+        <div class="row">
+          <div class="field">
+            <label for="ntp">Serveur NTP</label>
+            <input id="ntp" name="ntp_server" type="text">
+          </div>
+          <div class="field">
+            <label for="tz">Fuseau horaire</label>
+            <input id="tz" name="timezone" type="text">
+          </div>
+        </div>
+        <div class="right"><button class="btn">Mettre à l’heure</button></div>
+      </form>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:1rem 0">
+
+      <form id="fApi" method="post" action="/config/api" class="section">
+        <h2>API Meteospit.fr</h2>
+        <div class="row">
+          <div class="field">
+            <label for="apiurl">Adresse API</label>
+            <input id="apiurl" name="api_url" type="url">
+          </div>
+          <div class="field">
+            <label for="token">Token</label>
+            <input id="token" name="api_token" type="text">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field" style="min-width:140px">
+            <label for="api_enabled" class="small">Activer l’envoi à l’API</label>
+            <label class="switch">
+              <input id="api_enabled" name="api_enabled" type="checkbox">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="right"><button class="btn primary">Enregistrer API</button></div>
+      </form>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:1rem 0">
+
+      <form id="fModules" method="post" action="/config/modules" class="section">
+        <h2>Activer / désactiver les modules</h2>
+        <div class="row" id="modulesToggles"></div>
+        <div class="right"><button class="btn">Enregistrer modules</button></div>
+      </form>
+    </aside>
+  </div>
+  <a href="/config/vaneGirouette" >Girouette</a>
+  <div id="toast"></div>
+
+<script>
+const m = (s, el=document) => el.querySelector(s);
+const rows = m('#rows');
+const toggles = m('#modulesToggles');
+const showToast = (txt, ok=true)=>{const t=m('#toast');t.textContent=txt;t.style.background=ok?'#0b5':'#b33';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800)}
+
+function pill(ok){return `<span class="pill ${ok?'ok':'ko'}">${ok?'OK':'HS'}</span>`}
+function roSwitch(on){return `<label class="switch"><input type="checkbox" ${on?'checked':''} disabled><span class="slider"></span></label>`}
+
+async function load(){
+  try{
+    const r = await fetch('/status.json',{cache:'no-store'});
+    const s = await r.json();
+    // Table
+    const lines = [];
+    const add=(name,key,details,conf,act)=>{
+      lines.push(`<tr><td>${name}</td><td>${roSwitch(!!s.modules[key])}</td><td>${pill(!!s.state[key])}</td><td>${details}</td><td>${conf}</td><td>${act||''}</td></tr>`)}
+
+    add('BMP280','bmp280', s.bmp280?`T: ${s.bmp280.temp} °C • P: ${s.bmp280.press} hPa`:'—', `I²C: ${s.conf.bmp280_addr||'0x76'}`, `<form method="post" action="/config/test/bmp280"><button class="btn small">Tester</button></form>`);
+    add('DHT22','dht22', s.dht22?`T: ${s.dht22.temp} °C • HR: ${s.dht22.hum} %`:'—', `GPIO: ${s.conf.dht22_gpio||4}`, `<form method="post" action="/config/test/dht22"><button class="btn small">Tester</button></form>`);
+    add('SHT40','sht40', s.sht40?`T: ${s.sht40.temp} °C • HR: ${s.sht40.hum} %`:'—', `I²C: ${s.conf.sht40_addr||'0x44'}`, `<form method="post" action="/config/test/sht40"><button class="btn small">Tester</button></form>`);
+    add('Anémomètre','anemo', s.anemo?`Vitesse: ${s.anemo.speed} m/s • Rafale: ${s.anemo.gust} m/s`:'—', `GPIO: ${s.conf.anemo_gpio||18}`, `<form method="post" action="/config/test/anemo"><button class="btn small">Tester</button></form>`);
+    add('Girouette','vane', s.vane?`Direction: ${s.vane.deg}° (${s.vane.card})`:'—', `GPIOs: ${s.conf.vane_gpios||'32,33,25,26,27,14,12,13'}`, `<form method="post" action="/config/test/vane"><button class="btn small">Tester</button></form>`);
+    add('Pluviomètre','rain', s.rain?`Cumul: ${s.rain.mm} mm`:'—', `GPIO: ${s.conf.rain_gpio||19}`, `<form method="post" action="/config/test/rain"><button class="btn small">Tester</button></form>`);
+    lines.push(`<tr><td>Tensions</td><td>—</td><td>—</td><td>Solaire: ${s.volt?.solar??'—'} V • Batterie: ${s.volt?.batt??'—'} V</td><td>ADC: ${s.conf.adc_solar||35} / ${s.conf.adc_batt||34}</td><td><form method="post" action="/config/test/voltage"><button class="btn small">Tester</button></form></td></tr>`);
+    add('Bitvie','bitvie', '—', `ID: ${s.conf.bitvie_id||'—'}`, `<form method=post action=/config/test/bitvie><button class=btn small>Tester</button></form>`);
+    lines.push(`<tr><td>API</td><td>${roSwitch(!!s.conf.api_enabled)}</td><td>—</td><td>—</td><td>URL: ${s.conf.api_url||'—'}</td><td><form method=post action=/config/test/api><button class=btn small>Tester</button></form></td></tr>`);
+    rows.innerHTML = lines.join('');
+
+    // Form valeurs
+    m('#ssid').value = s.net?.ssid||'';
+    m('#wifipass').value = s.net?.wifi_password||'';
+    m('#ipwifi').value = s.net?.ip_wifi||'dhcp';
+    m('#idstation').value = s.net?.id_station||'';
+    m('#ntp').value = s.conf?.ntp_server||'pool.ntp.org';
+    m('#tz').value = s.conf?.timezone||'Europe/Paris';
+    m('#apiurl').value = s.conf?.api_url||'';
+    m('#token').value = s.conf?.api_token||'';
+    m('#api_enabled').checked = !!s.conf?.api_enabled;
+
+    // Toggles modules editables
+    const mods = ['bmp280','dht22','sht40','anemo','vane','rain','bitvie'];
+    toggles.innerHTML = mods.map(k=>`<div class="field" style="min-width:180px"><label class="small">${k.toUpperCase()}</label><label class="switch"><input type="checkbox" name="${k}_enabled" ${s.modules[k]?'checked':''}><span class="slider"></span></label></div>`).join('');
+  }catch(e){console.error(e);showToast('Impossible de charger /status.json',false)}
+}
+
+['fNetwork','fNtp','fApi','fModules'].forEach(fid=>{
+  const form = m('#'+fid);
+  if (!form) { console.warn('Form not found:', fid); return; } // <-- garde-fou
+  form.addEventListener('submit', async (ev)=>{
+    ev.preventDefault();
+    try{
+      const resp = await fetch(form.action,{method:'POST',body:new FormData(form)});
+      if(!resp.ok) throw new Error('HTTP '+resp.status);
+      showToast('Enregistré');
+      load();
+    }catch(e){
+      console.error('Save error for', fid, e); // <-- utile pour debug
+      showToast('Erreur d\'enregistrement',false)
+    }
+  })
+});
+
+load();
+</script>
+</body>
+</html>

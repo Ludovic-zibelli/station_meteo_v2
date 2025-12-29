@@ -2,6 +2,8 @@
 #include <ArduinoJson.h>
 
 //Capteurs
+
+
 #include <anemometre.h>
 #include "bmp280.h"
 #include <tensions.h>
@@ -18,14 +20,18 @@
 
 //Serveur web
 #include <WiFi.h>
-#include "ElegantOTA.h"
-#include <WebServer.h>
+//#include "ElegantOTA.h" // commented out to avoid dual-OTA conflicts
 #include <ArduinoOTA.h>
+#include <WebServer.h>
 //#include <ESPAsyncWebServer.h>
+
+#include "freertos/task.h"
 
 //Base de données
 #include "bd.h"
 #include "bd_mgr.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 //RTC
 #include <RTClib.h>
@@ -124,6 +130,11 @@ int module_tension = 1; //1 = Mesure des tensions activée, 0 = désactivée
 int module_bitvie = 1; //1 = Bitvie activé, 0 = désactivé
 int module_sht40 = 0; //1 = SHT40 activé, 0 = désactivé
 
+// Flag global pour indiquer qu'une OTA est en cours (utilisé par api.cpp)
+volatile bool otaInProgress = false;
+
+// (OTA via ElegantOTA)
+
 
 
 //Variable date heure
@@ -135,6 +146,15 @@ float old_vitesse = 0.0;
 //Pins
 #define BATTERY_PIN 34
 #define SOLAR_PIN   35
+
+// --- Lecture ADC moyenne pour atténuer le bruit (ESP32 ADC) ---
+static float readAdcAveraged(int pin, float fullScale = 3.6f, int N = 12) {
+  uint32_t sum = 0;
+  for (int i = 0; i < N; ++i) { sum += analogRead(pin); delay(2); }
+  float raw = (float)sum / (float)N;
+  return raw * fullScale / 4095.0f;  // 11 dB -> ~3.6 V
+}
+
 constexpr uint8_t ANEMO_PIN = 18; // Pin de l'anémomètre
 // GPIO (ESP32 WROOM32S) fournis par toi : 32,33,25,26,27,14,12,13
 // Ordre : {N, NE, E, SE, S, SW, W, NW}
@@ -169,6 +189,8 @@ extern void startStationInfoBackgroundTask();
 
 Modules mods{};      // état courant en mémoire
 Modules lastMods{};  // pour comparaison
+
+
 
 //Remise a l'heure du RTC avec la compilation de l'IDE
 
@@ -444,6 +466,69 @@ void handleEtatCapteurs() {
   server.send(200, "application/json", out);
 }
 
+// --- NTP/UI (en mémoire, tu peux persister plus tard si tu veux) ---
+static String g_ntp_server = "pool.ntp.org";
+static String g_timezone   = "Europe/Paris"; // ta règle tz CEST est déjà configurée plus haut
+
+void handleStatusJson() {
+  AppConfig cfg;
+  readAppConfig(cfg); // ssid_wifi, pass_wifi, ip_wifi, id_station, adresse_api, token, activation_envoi_api
+
+  StaticJsonDocument<1024> j;
+
+  // 1) Modules activés (depuis la DB ou variables miroir que tu synchronises)
+  JsonObject mods = j.createNestedObject("modules");
+  mods["bmp280"] = module_bmp280;
+  mods["dht22"]  = module_dht22;
+  mods["sht40"]  = module_sht40;
+  mods["anemo"]  = module_anemo;
+  mods["vane"]   = module_girou;   // nom "vane" côté UI
+  mods["rain"]   = module_pluvio;  // nom "rain" côté UI
+  mods["bitvie"] = module_bitvie;
+
+  // 2) Etats OK/HS (tes flags calculés)
+  JsonObject st = j.createNestedObject("state");
+  st["bmp280"] = etat_bmp280;
+  st["dht22"]  = etat_dht22;
+  st["sht40"]  = (module_sht40==1); // si tu as un flag dédié, remplace
+  st["anemo"]  = etat_anemo;
+  st["vane"]   = etat_girou;
+  st["rain"]   = etat_pluvio;
+
+  // 3) Valeurs courantes (déjà lues dans loop())
+  JsonObject jb = j.createNestedObject("bmp280"); jb["temp"]  = temp1;       jb["press"] = pression;
+  JsonObject jd = j.createNestedObject("dht22");  jd["temp"]  = temp2;       jd["hum"]   = humiditer;
+  JsonObject ja = j.createNestedObject("anemo");  ja["speed"] = vitesse;     ja["gust"]  = rafale;
+  JsonObject jv = j.createNestedObject("vane");   jv["deg"]   = degret;      jv["card"]  = "—"; // si tu as un libellé (N, NE...)
+  JsonObject jr = j.createNestedObject("rain");   jr["mm"]    = quantite;
+  JsonObject jvolt = j.createNestedObject("volt"); jvolt["solar"] = tension_solaire; jvolt["batt"] = tension_batterie;
+
+  // 4) Confs affichées (API + NTP)
+  JsonObject jc = j.createNestedObject("conf");
+  jc["bmp280_addr"] = "0x76";
+  jc["sht40_addr"]  = "0x44";
+  jc["dht22_gpio"]  = 4;
+  jc["anemo_gpio"]  = 18;
+  jc["adc_solar"]   = 35;
+  jc["adc_batt"]    = 34;
+  jc["api_url"]     = cfg.adresse_api;
+  jc["api_token"]   = cfg.token;
+  jc["api_enabled"] = (cfg.activation_envoi_api != 0);
+  jc["ntp_server"]  = g_ntp_server;
+  jc["timezone"]    = g_timezone;
+
+  // 5) Réseau
+  JsonObject jn = j.createNestedObject("net");
+  jn["ssid"]          = cfg.ssid_wifi;
+  jn["wifi_password"] = "";            // on n’affiche pas le mdp ici
+  jn["ip_wifi"]       = cfg.ip_wifi;   // "dhcp" ou "X.Y.Z.W"
+  jn["id_station"]    = cfg.id_station;
+
+  String out; serializeJson(j, out);
+  server.send(200, "application/json", out);
+}
+
+
 
 
 void setup() {
@@ -554,6 +639,74 @@ server.on("/", handleRoot);
 server.on("/data", handleData);
 server.on("/settime", handleSetTime);
 server.on("/etatcapteurs", HTTP_GET, handleEtatCapteurs);
+server.on("/status.json", HTTP_GET, handleStatusJson);
+
+server.on("/config", HTTP_GET, [](){
+  File file = SPIFFS.open("/config_working.html", "r");
+  if (file) { server.streamFile(file, "text/html"); file.close(); }
+  else { server.send(404, "text/plain", "Page config introuvable"); }
+});
+
+
+// --- Page sous-config girouette ---
+server.on("/config/vane", HTTP_GET, []() {
+  File f = SPIFFS.open("/config_vane.html", "r");
+  if (f) { server.streamFile(f, "text/html"); f.close(); }
+  else   { server.send(404, "text/plain", "Page girouette introuvable"); }
+});
+
+// --- JSON live des entrées de la girouette ---
+server.on("/vane/inputs.json", HTTP_GET, []() {
+  StaticJsonDocument<512> doc;
+  JsonObject j = doc.createNestedObject("vane");
+
+  // Etat bouton calibration (LOW = appuyé car INPUT_PULLUP)
+  j["button"] = (digitalRead(PIN_BTN_CAL) == LOW);
+
+  // Offset Nord courant (on utilise ta variable g_northOffsetDeg)
+  j["offset_deg"] = g_northOffsetDeg;
+
+  // Pins: N, NE, E, SE, S, SW, W, NW
+  const char* NAMES[8] = {"N","NE","E","SE","S","SW","W","NW"};
+  JsonArray pins = j.createNestedArray("pins");
+  for (int i = 0; i < 8; ++i) {
+    JsonObject o = pins.createNestedObject();
+    o["name"] = NAMES[i];
+    int raw = digitalRead(PINS_GIROUETTE[i]);  // HIGH/LOW
+    o["raw"] = raw;
+    // Tu as configuré invertLogic=true + INPUT_PULLUP -> contact actif = LOW
+    o["active"] = (raw == LOW);
+  }
+
+  // Angle et nom cardinal courants (fenêtre courte pour limiter la latence)
+  float angle = girouette.readAngle(24);
+  if (!isnan(angle)) {
+    j["angle"] = angle;
+    j["card"]  = girouette.readName(24);
+  } else {
+    j["angle"] = nullptr;
+    j["card"]  = "—";
+  }
+
+  String out; serializeJson(doc, out);
+  server.send(200, "application/json", out);
+});
+
+
+server.on("/vane/calibrate", HTTP_POST, []() {
+  float angle = girouette.readAngle(24);
+  if (!isnan(angle)) {
+    // nouveau offset : on veut que l'angle actuel devienne 0°
+    g_northOffsetDeg = wrap360f(g_northOffsetDeg - angle);
+    girouette.setNorthOffsetDegrees(g_northOffsetDeg);
+    server.send(200, "application/json", "{\"ok\":true}");
+    Serial.printf("[Girouette] Calibration Nord API OK (offset=%.1f°)\n", g_northOffsetDeg);
+  } else {
+    server.send(500, "application/json", "{\"ok\":false}");
+    Serial.println("[Girouette] Calibration API ignorée: angle invalide");
+  }
+});
+
 
 // NotFound -> sert /images/... avec cache, sinon 404
 server.onNotFound([]() {
@@ -565,7 +718,74 @@ server.onNotFound([]() {
   server.send(404, "text/plain", "Not found");
 });
 
+
+server.on("/config/network", HTTP_POST,  []() {
+  AppConfig cur; readAppConfig(cur);
+  AppConfig n = cur;
+  if (server.hasArg("ssid"))       n.ssid_wifi = server.arg("ssid");
+  if (server.hasArg("wifi_password")) {
+    String p = server.arg("wifi_password");
+    if (p != "") n.pass_wifi = p;
+  }
+  if (server.hasArg("ip_wifi"))    n.ip_wifi = server.arg("ip_wifi"); // "dhcp" ou "x.x.x.x"
+  if (server.hasArg("id_station")) n.id_station = server.arg("id_station");
+
+  if (!updateAppConfig(n)) { server.send(500,"text/plain","db update failed"); return; }
+
+  // (optionnel) appliquer la connexion WiFi si SSID/MdP ont changé
+  if (n.ssid_wifi != cur.ssid_wifi || n.pass_wifi != cur.pass_wifi) {
+    WiFi.disconnect(true, true);
+    delay(300);
+    WiFi.begin(n.ssid_wifi.c_str(), n.pass_wifi.c_str());
+  }
+
+  server.send(200, "text/plain", "OK");
+});
+
+
+server.on("/config/api", HTTP_POST, []() {
+  AppConfig cur; readAppConfig(cur);
+  AppConfig n = cur;
+  if (server.hasArg("api_url"))   n.adresse_api = server.arg("api_url");
+  if (server.hasArg("api_token")) n.token       = server.arg("api_token");
+  // checkbox: présent si coché
+  n.activation_envoi_api = server.hasArg("api_enabled") ? 1 : 0;
+
+  if (!updateAppConfig(n)) { server.send(500,"text/plain","db update failed"); return; }
+  apiRefreshConfigFromDb(); // tu l’as déjà
+
+  server.send(200, "text/plain", "OK");
+});
+
+
+server.on("/config/modules", HTTP_POST, []()  {
+  int bmp280 = server.hasArg("bmp280_enabled") ? 1 : 0;
+  int dht22  = server.hasArg("dht22_enabled")  ? 1 : 0;
+  int sht40  = server.hasArg("sht40_enabled")  ? 1 : 0;
+  int anemo  = server.hasArg("anemo_enabled")  ? 1 : 0;
+  int girou  = server.hasArg("vane_enabled")   ? 1 : 0;  // "vane" côté UI
+  int rain   = server.hasArg("rain_enabled")   ? 1 : 0;
+  int tens   = server.hasArg("tension_enabled")? 1 : 0;  // si tu exposes ce toggle
+  int bitvie = server.hasArg("bitvie_enabled") ? 1 : 0;
+
+  // Mets à jour la base (tu le fais déjà dans /update_config)
+  updateModulesInDB(1, bmp280, dht22, sht40, anemo, girou, rain, tens, bitvie);
+
+  // Mets à jour les variables runtime pour que /status.json reflète la modif sans attendre le poll
+  module_bmp280 = bmp280;
+  module_dht22  = dht22;
+  module_sht40  = sht40;
+  module_anemo  = anemo;
+  module_girou  = girou;
+  module_pluvio = rain;
+  module_tension= tens;
+  module_bitvie = bitvie;
+
+  server.send(200, "text/plain", "OK");
+});
+
 // /config
+/*
 server.on("/config", HTTP_GET, []() {
   File file = SPIFFS.open("/config.html", "r");
   if (file) {
@@ -575,6 +795,7 @@ server.on("/config", HTTP_GET, []() {
     server.send(404, "text/plain", "Page config introuvable");
   }
 });
+*/
 
 // /style (MIME + cache)
 server.on("/style", HTTP_GET, []() {
@@ -672,9 +893,160 @@ server.on("/config.save", HTTP_POST, []()  {
     server.send(200, "application/json", "{\"ok\":true}");
 });
 
-// OTA
-ElegantOTA.begin(&server);
-server.begin();
+
+
+
+// --- Endpoint JSON live des tensions ---
+server.on("/adc/live", HTTP_GET, []() {
+  // Pendant OTA, on peut choisir de répondre 503 (optionnel)
+  if (otaInProgress) {
+    server.send(503, "application/json", "{\"error\":\"OTA in progress\"}");
+    return;
+  }
+
+  // Lire la tension "à l'ADC" (point milieu du diviseur)
+  float vAdcSolar = readAdcAveraged(SOLAR_PIN, 3.6f, 12);
+  float vAdcBatt  = readAdcAveraged(BATTERY_PIN, 3.6f, 12);
+
+  // Appliquer les facteurs de correction basés sur tes résistances
+  // Solaire: R1=100k (haut), R2=47k (bas) -> facteur ≈ (100k+47k)/47k = 3.1277
+  // Batterie: D'après ton schéma: Rhaut=200k, Rbas=100k -> facteur = (200k+100k)/100k = 3.0
+  const float kSolar = (100000.0f + 47000.0f) / 47000.0f;
+  const float kBatt  = (200000.0f + 100000.0f) / 100000.0f;  // adapte à 220k/100k si nécessaire
+
+  float vSolar = vAdcSolar * kSolar;
+  float vBatt  = vAdcBatt  * kBatt;
+
+  // Exposer aussi les valeurs brutes (utile pour la calibration)
+  int rawSolar = analogRead(SOLAR_PIN);
+  int rawBatt  = analogRead(BATTERY_PIN);
+
+  StaticJsonDocument<256> doc;
+  JsonObject solar = doc.createNestedObject("solar");
+  solar["raw"] = rawSolar;
+  solar["v_adc"] = vAdcSolar;      // tension mesurée au pin (après diviseur)
+  solar["v_corr"] = vSolar;        // tension calculée côté source
+
+  JsonObject batt = doc.createNestedObject("batt");
+  batt["raw"] = rawBatt;
+  batt["v_adc"] = vAdcBatt;
+  batt["v_corr"] = vBatt;
+
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+});
+
+
+server.on("/adc.html", HTTP_GET, []() {
+  const char* path = "/adc.html";
+  if (!SPIFFS.exists(path)) {
+    server.send(404, "text/plain", "adc.html introuvable");
+    return;
+  }
+  File f = SPIFFS.open(path, "r");
+  server.sendHeader("Cache-Control", "no-store"); // éviter cache pendant tests
+  server.streamFile(f, "text/html");
+  f.close();
+});
+
+
+
+// ElegantOTA integration commented out to avoid conflicts with ArduinoOTA
+// ElegantOTA.begin(&server);
+// ElegantOTA.onStart(...) { ... }
+// ElegantOTA.onEnd(...) { ... }
+// ElegantOTA.onProgress(...) { ... }
+
+
+
+// ---- ArduinoOTA (single OTA method) ----
+extern TaskHandle_t stationInfoTaskHandle;
+extern SemaphoreHandle_t g_dbMutex;
+extern void isrAnemo(); // si tu utilises une ISR
+extern void isrPluvio();
+
+static bool dbMutexWasTaken = false;
+
+
+ArduinoOTA.onStart([]() {
+  Serial.println("ArduinoOTA start — preparing safe state...");
+  otaInProgress = true;
+
+  // (Optionnel) détacher interruptions si tu veux éviter des burst:
+  detachInterrupt(18); // anémo
+  detachInterrupt(19); // pluvio
+
+  if (stationInfoTaskHandle) vTaskSuspend(stationInfoTaskHandle);
+
+  // Fermer DB sans conserver le mutex longtemps
+  if (g_dbMutex && xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    db_end();
+    xSemaphoreGive(g_dbMutex);
+  } else {
+    Serial.println("DB mutex busy — skip db_end()");
+  }
+
+  // ⚠️ SPIFFS.end() à éviter si le WebServer sert des fichiers
+});
+
+
+ArduinoOTA.onEnd( []() {
+  Serial.println("ArduinoOTA end — restoring...");
+  // 1) Remonter DB (mutex pris seulement si nécessaire/possible)
+  if (g_dbMutex && xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (!db_begin()) Serial.println("DB reopen failed");
+    xSemaphoreGive(g_dbMutex);
+  } else {
+    Serial.println("DB mutex busy — deferred db_begin()");
+  }
+
+  // 2) SPIFFS reste monté; si tu l'avais démonté, remonte ici.
+  // if (!SPIFFS.begin(true)) Serial.println("SPIFFS remount failed");
+
+  // 3) Re-attach ISR + reprendre tâches
+  
+  anemo_init(
+      ANEMO_PIN,      // ton GPIO défini à 18
+      0.6667f,
+      0.0f,
+      1,
+      2000,
+      100.0f
+  );
+
+  initPluviometre();  // remet en place l’ISR du pluviomètre
+  
+  // Dans onEnd() / onError(), si tu l’avais démonté :
+  //if (!SPIFFS.begin(true)) Serial.println("SPIFFS remount failed");
+
+  if (stationInfoTaskHandle) vTaskResume(stationInfoTaskHandle);
+
+  otaInProgress = false;
+});
+
+ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+  Serial.printf("ArduinoOTA progress: %u/%u\n", progress, total);
+});
+
+
+ArduinoOTA.onError([](ota_error_t error) {
+  Serial.printf("ArduinoOTA Error[%u]\n", error);
+
+  otaInProgress = false; // ✅ pour permettre la remise en état
+
+  if (g_dbMutex && xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (!db_begin()) Serial.println("DB reopen failed");
+    xSemaphoreGive(g_dbMutex);
+  }
+
+  anemo_init(18, 0.6667f, 0.0f, 1, 2000, 100.0f);
+  initPluviometre();
+  if (stationInfoTaskHandle) vTaskResume(stationInfoTaskHandle);
+});
+
+
+
   File root = SPIFFS.open("/");
   File file = root.openNextFile();
   while (file) {
@@ -686,6 +1058,16 @@ server.begin();
   setupLocalStationApiHandler(server);
   // fetch immédiat au démarrage
   startStationInfoBackgroundTask();
+
+  
+  // 5) 👉 DÉMARRER le serveur web
+  server.begin();
+  Serial.println("WebServer ready.");
+
+  // 6) 👉 DÉMARRER ArduinoOTA (après Wi‑Fi OK)
+  ArduinoOTA.begin();
+  Serial.println("ArduinoOTA ready.");
+
   
 
 }
@@ -698,13 +1080,31 @@ void loop() {
     static unsigned long tDbHealth = 0;    // Ajout de la déclaration de tDbHealth
     //static unsigned long tPollMods = 0;    // Déclaration de tPollMods
 
+    // Gestion des requêtes OTA via ElegantOTA (handled by webserver)
+    // ElegantOTA tourne dans les callbacks du serveur HTTP, pas besoin d'handle() ici.
+
     // Gestion des requêtes du serveur web
-    server.handleClient();
-    ElegantOTA.loop();
+    
+    // Exemple dans loop():
+    server.handleClient();      // OK
+    ArduinoOTA.handle();        // doit rester réactif
+
+    
+  // 👉 Si OTA en cours : on ne fait **rien d'autre** pour éviter la faim CPU/mémoire
+    if (otaInProgress) {
+      delay(1); // micro pause coopérative
+      return;   // quitte la loop ici
+    }
+
+
     
 
     if (millis() - tDbHealth >= 5000) {       // toutes les 5 s
-      db_reopen_if_needed("/spiffs/station.db");                // réouvre seulement si nécessaire
+      if (!otaInProgress) {
+        db_reopen_if_needed("/spiffs/station.db");                // réouvre seulement si nécessaire
+      } else {
+        Serial.println("OTA in progress — skipping db_reopen_if_needed");
+      }
       tDbHealth = millis();
     }
 
@@ -942,7 +1342,13 @@ void loop() {
           degret = 0;
           etat_girou = 0;
         }
-      
+        
+    if (otaInProgress) {
+      // 👉 Pas d’écriture DB, pas de reopen, pas d’envoi API ici
+      // (tu peux garder les lectures capteurs/affichages si ça n’utilise pas la DB)
+    } else {
+ 
+    
         //Mise à jour de la base de données
         if (updateStationDirect(
             1,                // id de la ligne à mettre à jour
@@ -1007,6 +1413,7 @@ void loop() {
         } else {
             Serial.println("Envoi des données à l'API désactivé.");
         }
+      }
       }
  
 

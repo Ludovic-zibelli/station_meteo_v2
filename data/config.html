@@ -1,379 +1,321 @@
-<!DOCTYPE html>
+
+<!doctype html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="/style.css" />
   <link rel="shortcut icon" href="/images/logo_meteo.png" />
-  <title>Station METEOSPIT.fr ESP32|Configuration</title>
-  <!-- Bootstrap CSS depuis un CDN -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<container-fluid>
-        <header>
-                <nav class="nav_dek navbar fixed-top navbar-expand-lg  navbar-dark bg-dark">
-            
-                    <a class="navbar-brand" href="{{ path('home') }}">
-                        <img src="images/logo_meteo_head6.png" width="260" height="100" class="logo_site align-left rounded float-left" alt="Station Meteo">
-                    </a>
-                    <div class="collapse navbar-collapse" id="navbarText">
-                        <ul class="navbar-nav ml-auto">
-                            <li class="nav-item">
-                                <a class="nav-link" href="/">Accueil</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link" href="/config">Configuration</a>
-                            </li>
-                            <li class="nav-item">
-                            <a class="nav-link" href="/infos">Info compte Meteospit.fr</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link" href="/update">Mise a jour</a>
-                            </li>
-                        </ul>
-                    </div>
-
-                </nav>
-                <div style="height:120px;">
-                  etat 
-                </div> <!-- Espace pour la navbar fixe -->
-        </header> 
-<body>
-<div class="row">
-  <h2>Configuration des modules et API</h2>
-  <form action="/update_config" method="POST">
-    <fieldset>
-      <legend>Modules capteurs</legend>
-      <label><input type="checkbox" name="bmp280" value="1"> BMP280</label><br>
-      <label><input type="checkbox" name="dht22" value="1"> DHT22</label><br>
-      <label><input type="checkbox" name="anemo" value="1"> Anémomètre</label><br>
-      <label><input type="checkbox" name="girou" value="1"> Girouette</label><br>
-      <label><input type="checkbox" name="pluvio" value="1"> Pluviomètre</label><br>
-      <label><input type="checkbox" name="tension" value="1"> Tension</label><br>
-      <label><input type="checkbox" name="bitvie" value="1"> Bitvie</label><br>
-    </fieldset>
-    <fieldset>
-      <legend>API</legend>
-      <label><input type="checkbox" name="api" value="1"> Activer l'envoi à l'API</label><br>
-    </fieldset>
-    <input type="submit" value="Mettre à jour">
-  </form>
-  <section>
-  <h3>État des capteurs (depuis la base)</h3>
+  <title>Station METEOSPIT.fr ESP32 — Configuration</title>
   <style>
-    .ok{color:#0a0;background:#e8ffe8;padding:2px 6px;border-radius:4px}
-    .ko{color:#a00;background:#ffe8e8;padding:2px 6px;border-radius:4px}
-    table.state{border-collapse:collapse;width:100%;max-width:640px}
-    table.state td, table.state th{border:1px solid #ccc;padding:6px 8px}
-    table.state th{background:#f7f7f7;text-align:left}
-    .mono{font-family:ui-monospace,Consolas,monospace}
+    :root{--bg:#0f172a;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--accent:#22c55e;--danger:#ef4444;--link:#60a5fa;--line:#1f2937}
+    html,body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;line-height:1.45;margin:0}
+    a{color:var(--link);text-decoration:none} a:hover{text-decoration:underline}
+    header{display:flex;gap:1rem;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--line);background:#0b1220;position:sticky;top:0;z-index:10}
+    nav a{margin-right:1rem;color:var(--muted)} nav a.active, nav a:hover{color:var(--text)}
+    .wrap{max-width:1100px;margin:0 auto;padding:1rem}
+    h1{font-size:1.5rem;margin:0.25rem 0 0.75rem}
+    h2{font-size:1.1rem;margin:1.25rem 0 0.5rem;color:#d1d5db}
+    .grid{display:grid;grid-template-columns:1fr;gap:1rem}
+    @media(min-width:900px){.grid{grid-template-columns:2fr 1fr}}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:12px; padding:1rem}
+    .muted{color:var(--muted);font-size:.9rem}
+    table{width:100%;border-collapse:collapse}
+    th,td{border-bottom:1px solid var(--line);padding:.55rem .5rem;text-align:left;vertical-align:top}
+    th{color:#d1d5db;font-weight:600}
+    .pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;padding:.15rem .6rem;font-size:.8rem;border:1px solid var(--line)}
+    .ok{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.35);color:#86efac}
+    .ko{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.35);color:#fca5a5}
+    .btn{appearance:none;border:1px solid var(--line);background:#0e1628;color:var(--text);border-radius:10px;padding:.5rem .8rem;cursor:pointer}
+    .btn.primary{background:#0b5; border-color:#094;}
+    .btn.danger{background:#922;border-color:#b33}
+    .row{display:flex;gap:.5rem;flex-wrap:wrap}
+    .field{display:flex;flex-direction:column;gap:.25rem;margin:.4rem 0;min-width:220px;flex:1}
+    input[type="text"],input[type="password"],input[type="number"],input[type="url"]{background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:.55rem .6rem}
+    .switch{position:relative;display:inline-block;width:44px;height:24px;vertical-align:middle}
+    .switch input{display:none}
+    .slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#334155;border-radius:999px;transition:.18s}
+    .slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.18s}
+    input:checked + .slider{background:#16a34a}
+    input:checked + .slider:before{transform:translateX(20px)}
+    .right{display:flex;justify-content:flex-end}
+    .small{font-size:.85rem}
+    form{margin:0}
   </style>
+</head>
+<body>
+  <header>
+    <div>
+      <div class="muted small">Station METEOSPIT.fr ESP32</div>
+      <h1>Configuration</h1>
+    </div>
+    <nav aria-label="Navigation principale">
+      <a href="/" >Accueil</a>
+      <a href="/config" class="active">Configuration</a>
+      <a href="/infos">Info compte Meteospit.fr</a>
+      <a href="/update">Mise à jour</a>
+    </nav>
+  </header>
 
-  <table class="state" id="etat">
-    <thead>
-      <tr><th>Module</th><th>Activation</th><th>État</th><th>Détails</th><th>Configuration des capteurs</th><th>Configurations</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>BMP280</td><td id="m_bmp280">?</td><td id="e_bmp280">?</td><td class="mono" id="d_bmp280">—</td><td><button class="toggle-btn" data-sensor="bmp280">Activer</button></td><td></td></tr>
-      <tr><td>DHT22</td> <td id="m_dht22">?</td> <td id="e_dht22">?</td>  <td class="mono" id="d_dht22">—</td><td><button class="toggle-btn" data-sensor="dht22">Activer</button></td><td></td></tr>
-      <tr><td>SHT40</td> <td id="m_sht40">?</td> <td id="e_sht40">?</td>  <td class="mono" id="d_sht40">—</td><td><button class="toggle-btn" data-sensor="sht40">Activer</button></td><td></td></tr>
-      <tr><td>Anémomètre</td><td id="m_anemo">?</td><td id="e_anemo">?</td><td class="mono" id="d_anemo">—</td><td><button class="toggle-btn" data-sensor="anemo">Activer</button></td><td></td></tr>
-      <tr><td>Girouette</td><td id="m_girou">?</td><td id="e_girou">?</td><td class="mono" id="d_girou">—</td><td><button class="toggle-btn" data-sensor="girou">Activer</button></td><td></td></tr>
-      <tr><td>Pluviomètre</td><td id="m_pluvio">?</td><td id="e_pluvio">?</td><td class="mono" id="d_pluvio">—</td><button class="toggle-btn" data-sensor="pluvio">Activer</button><td></td><td></td></tr>
-      <tr><td>Tensions</td><td id="m_tension">?</td><td>—</td>
-          <td class="mono">Solaire: <span id="vsol">—</span> V &nbsp;|&nbsp; Batterie: <span id="vbat">—</span> V</td><td></td><td></td></tr>
-      <tr><td>Bitvie</td><td id="m_bitvie">?</td><td>—</td><td class="mono">—</td><td><button class="toggle-btn" data-sensor="bitvie">Activer</button></td><td></td></tr>
-      <tr><td>API</td><td id="mod-api">?</td><td id="etat-api">—</td><td class="mono">—</td><td><button class="toggle-btn" data-sensor="api">Activer</button></td><td></td></tr>
-    </tbody>
-  </table>
+  <div class="wrap grid">
+    <!-- Colonne gauche: État & capteurs -->
+    <section class="card">
+      <h2>Configuration des modules et API</h2>
 
-  <p id="lastUpdate" class="mono"></p>
-  <button onclick="fetch('/settime')">Synchroniser l'heure (NTP)</button>
-</div>
-<!-- === Formulaire Config Wi‑Fi / API === -->
-<form id="cfgForm" style="margin:12px 0; padding:12px; border:1px solid #ccc; border-radius:8px;">
-  <div style="display:flex; gap:12px; flex-wrap:wrap;">
-    <label style="flex:1 1 260px;">SSID Wi‑Fi
-      <input type="text" name="ssid_wifi" id="ssid_wifi" required style="width:100%;">
-    </label>
-    <label style="flex:1 1 260px;">Mot de passe Wi‑Fi
-      <input type="password" name="pass_wifi" id="pass_wifi" placeholder="(laisser vide pour conserver)" style="width:100%;">
-    </label>
+      <div class="muted small" style="margin:.2rem 0 .8rem">État des capteurs (valeurs actuelles)</div>
+      <div style="overflow:auto">
+        <table aria-describedby="help-etat">
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Activation</th>
+              <th>État</th>
+              <th>Détails</th>
+              <th>Configuration</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Exemples avec variables Twig conservant la mise en page -->
+            <tr>
+              <td>BMP280</td>
+              <td>
+                <label class="switch" title="Activer BMP280">
+                  <input type="checkbox" name="bmp280_enabled" {{ bmp280_enabled ? 'checked' : '' }} disabled>
+                  <span class="slider"></span>
+                </label>
+              </td>
+              <td>
+                {% if bmp280_ok %}<span class="pill ok">OK</span>{% else %}<span class="pill ko">HS</span>{% endif %}
+              </td>
+              <td>{% if bmp280_data is defined %}T: {{ bmp280_data.temp }} °C &nbsp;•&nbsp; P: {{ bmp280_data.press }} hPa{% else %}—{% endif %}</td>
+              <td>Adresse I²C: {{ bmp280_addr|default('0x76') }}</td>
+              <td>
+                <form method="post" action="/config/test/bmp280"><button class="btn small">Tester</button></form>
+              </td>
+            </tr>
+
+            <tr>
+              <td>DHT22</td>
+              <td>
+                <label class="switch" title="Activer DHT22">
+                  <input type="checkbox" name="dht22_enabled" {{ dht22_enabled ? 'checked' : '' }} disabled>
+                  <span class="slider"></span>
+                </label>
+              </td>
+              <td>{% if dht22_ok %}<span class="pill ok">OK</span>{% else %}<span class="pill ko">HS</span>{% endif %}</td>
+              <td>{% if dht22_data is defined %}T: {{ dht22_data.temp }} °C &nbsp;•&nbsp; HR: {{ dht22_data.hum }} %{% else %}—{% endif %}</td>
+              <td>GPIO: {{ dht22_gpio|default(4) }}</td>
+              <td><form method="post" action="/config/test/dht22"><button class="btn small">Tester</button></form></td>
+            </tr>
+
+            <tr>
+              <td>SHT40</td>
+              <td>
+                <label class="switch" title="Activer SHT40">
+                  <input type="checkbox" name="sht40_enabled" {{ sht40_enabled ? 'checked' : '' }} disabled>
+                  <span class="slider"></span>
+                </label>
+              </td>
+              <td>{% if sht40_ok %}<span class="pill ok">OK</span>{% else %}<span class="pill ko">HS</span>{% endif %}</td>
+              <td>{% if sht40_data is defined %}T: {{ sht40_data.temp }} °C &nbsp;•&nbsp; HR: {{ sht40_data.hum }} %{% else %}—{% endif %}</td>
+              <td>I²C: {{ sht40_addr|default('0x44') }}</td>
+              <td><form method="post" action="/config/test/sht40"><button class="btn small">Tester</button></form></td>
+            </tr>
+
+            <tr>
+              <td>Anémomètre</td>
+              <td>
+                <label class="switch" title="Activer anémomètre">
+                  <input type="checkbox" name="anemo_enabled" {{ anemo_enabled ? 'checked' : '' }} disabled>
+                  <span class="slider"></span>
+                </label>
+              </td>
+              <td>{% if anemo_ok %}<span class="pill ok">OK</span>{% else %}<span class="pill ko">HS</span>{% endif %}</td>
+              <td>{% if anemo_data is defined %}Vitesse: {{ anemo_data.speed }} m/s • Rafale: {{ anemo_data.gust }} m/s{% else %}—{% endif %}</td>
+              <td>GPIO: {{ anemo_gpio|default(18) }}</td>
+              <td><form method="post" action="/config/test/anemo"><button class="btn small">Tester</button></form></td>
+            </tr>
+
+            <tr>
+              <td>Girouette</td>
+              <td>
+                <label class="switch" title="Activer girouette">
+                  <input type="checkbox" name="vane_enabled" {{ vane_enabled ? 'checked' : '' }} disabled>
+                  <span class="slider"></span>
+                </label>
+              </td>
+              <td>{% if vane_ok %}<span class="pill ok">OK</span>{% else %}<span class="pill ko">HS</span>{% endif %}</td>
+              <td>{% if vane_data is defined %}Direction: {{ vane_data.deg }}° ({{ vane_data.card }}){% else %}—{% endif %}</td>
+              <td>GPIOs: {{ vane_gpios|default('32,33,25,26,27,14,12,13') }}</td>
+              <td><form method="post" action="/config/vane"><button class="btn small">Tester</button></form>
+                
+              </td>
+
+            </tr>
+
+            <tr>
+              <td>Pluviomètre</td>
+              <td>
+                <label class="switch" title="Activer pluviomètre">
+                  <input type="checkbox" name="rain_enabled" {{ rain_enabled ? 'checked' : '' }} disabled>
+                  <span class="slider"></span>
+                </label>
+              </td>
+              <td>{% if rain_ok %}<span class="pill ok">OK</span>{% else %}<span class="pill ko">HS</span>{% endif %}</td>
+              <td>{% if rain_data is defined %}Cumul: {{ rain_data.mm }} mm{% else %}—{% endif %}</td>
+              <td>GPIO: {{ rain_gpio|default(19) }}</td>
+              <td><form method="post" action="/config/test/rain"><button class="btn small">Tester</button></form></td>
+            </tr>
+
+            <tr>
+              <td>Tensions</td>
+              <td>—</td>
+              <td>—</td>
+              <td>Solaire: {{ v_solar|default('—') }} V • Batterie: {{ v_batt|default('—') }} V</td>
+              <td>ADC: {{ adc_solar|default(35) }} / {{ adc_batt|default(34) }}</td>
+              <td><form method="post" action="/config/adc.html"><button class="btn small">Tester</button></form></td>
+            </tr>
+
+            <tr>
+              <td>Bitvie</td>
+              <td>
+                <label class="switch" title="Activer Bitvie">
+                  <input type="checkbox" name="bitvie_enabled" {{ bitvie_enabled ? 'checked' : '' }} disabled>
+                  <span class="slider"></span>
+                </label>
+              </td>
+              <td>—</td>
+              <td>—</td>
+              <td>ID: {{ bitvie_id|default('—') }}</td>
+              <td><form method="post" action="/config/test/bitvie"><button class="btn small">Tester</button></form></td>
+            </tr>
+
+            <tr>
+              <td>API</td>
+              <td>
+                <label class="switch" title="Activer l’envoi API">
+                  <input type="checkbox" name="api_enabled" {{ api_enabled ? 'checked' : '' }} disabled>
+                  <span class="slider"></span>
+                </label>
+              </td>
+              <td>—</td>
+              <td>—</td>
+              <td>URL: {{ api_url|default('—') }}</td>
+              <td><form method="post" action="/config/test/api"><button class="btn small">Tester</button></form></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="help-etat" class="muted small" style="margin-top:.6rem">Les interrupteurs sont affichés en lecture seule ici. Utilisez les formulaires de configuration à droite pour modifier.</div>
+    </section>
+
+    <!-- Colonne droite: formulaires qui fonctionnent -->
+    <aside class="card">
+      <h2>Paramètres réseau & API</h2>
+      <form method="post" action="/config/network" class="section">
+        <div class="row">
+          <div class="field">
+            <label for="ssid">SSID Wi‑Fi</label>
+            <input id="ssid" name="ssid" type="text" value="{{ wifi_ssid|default('') }}" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="wifipass">Mot de passe Wi‑Fi</label>
+            <input id="wifipass" name="wifi_password" type="password" value="{{ wifi_password|default('') }}" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="ipwifi">IP_WIFI</label>
+            <input id="ipwifi" name="ip_wifi" type="text" value="{{ ip_wifi|default('dhcp') }}" placeholder="dhcp ou 192.168.1.50">
+          </div>
+          <div class="field">
+            <label for="idstation">ID_STATION</label>
+            <input id="idstation" name="id_station" type="text" value="{{ id_station|default('') }}">
+          </div>
+        </div>
+        <div class="right"><button class="btn primary">Enregistrer réseau</button></div>
+      </form>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:1rem 0">
+
+      <form method="post" action="/config/ntp" class="section">
+        <h2>Synchroniser l’heure (NTP)</h2>
+        <div class="row">
+          <div class="field">
+            <label for="ntp">Serveur NTP</label>
+            <input id="ntp" name="ntp_server" type="text" value="{{ ntp_server|default('pool.ntp.org') }}">
+          </div>
+          <div class="field">
+            <label for="tz">Fuseau horaire</label>
+            <input id="tz" name="timezone" type="text" value="{{ timezone|default('Europe/Paris') }}">
+          </div>
+        </div>
+        <div class="right"><button class="btn">Mettre à l’heure</button></div>
+      </form>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:1rem 0">
+
+      <form method="post" action="/config/api" class="section">
+        <h2>API Meteospit.fr</h2>
+        <div class="row">
+          <div class="field">
+            <label for="apiurl">Adresse API</label>
+            <input id="apiurl" name="api_url" type="url" value="{{ api_url|default('https://api.meteospit.fr') }}">
+          </div>
+          <div class="field">
+            <label for="token">Token</label>
+            <input id="token" name="api_token" type="text" value="{{ api_token|default('') }}">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field" style="min-width:140px">
+            <label for="api_enabled" class="small">Activer l’envoi à l’API</label>
+            <label class="switch">
+              <input id="api_enabled" name="api_enabled" type="checkbox" {{ api_enabled ? 'checked' : '' }}>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="right"><button class="btn primary">Enregistrer API</button></div>
+      </form>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:1rem 0">
+
+      <form method="post" action="/config/modules" class="section">
+        <h2>Activer / désactiver les modules</h2>
+        <div class="row">
+          <div class="field" style="min-width:180px">
+            <label class="small">BMP280</label>
+            <label class="switch"><input type="checkbox" name="bmp280_enabled" {{ bmp280_enabled ? 'checked' : '' }}><span class="slider"></span></label>
+          </div>
+          <div class="field" style="min-width:180px">
+            <label class="small">DHT22</label>
+            <label class="switch"><input type="checkbox" name="dht22_enabled" {{ dht22_enabled ? 'checked' : '' }}><span class="slider"></span></label>
+          </div>
+          <div class="field" style="min-width:180px">
+            <label class="small">SHT40</label>
+            <label class="switch"><input type="checkbox" name="sht40_enabled" {{ sht40_enabled ? 'checked' : '' }}><span class="slider"></span></label>
+          </div>
+          <div class="field" style="min-width:180px">
+            <label class="small">Anémomètre</label>
+            <label class="switch"><input type="checkbox" name="anemo_enabled" {{ anemo_enabled ? 'checked' : '' }}><span class="slider"></span></label>
+          </div>
+          <div class="field" style="min-width:180px">
+            <label class="small">Girouette</label>
+            <label class="switch"><input type="checkbox" name="vane_enabled" {{ vane_enabled ? 'checked' : '' }}><span class="slider"></span></label>
+          </div>
+          <div class="field" style="min-width:180px">
+            <label class="small">Pluviomètre</label>
+            <label class="switch"><input type="checkbox" name="rain_enabled" {{ rain_enabled ? 'checked' : '' }}><span class="slider"></span></label>
+          </div>
+          <div class="field" style="min-width:180px">
+            <label class="small">Bitvie</label>
+            <label class="switch"><input type="checkbox" name="bitvie_enabled" {{ bitvie_enabled ? 'checked' : '' }}><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="right"><button class="btn">Enregistrer modules</button></div>
+      </form>
+    </aside>
   </div>
-
-  <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:8px;">
-    <label style="flex:1 1 200px;">IP_WIFI
-      <input type="text" name="IP_WIFI" id="IP_WIFI" placeholder="192.168.1.xx" style="width:100%;">
-    </label>
-    <label style="flex:1 1 200px;">ID_STATION
-      <input type="text" name="ID_STATION" id="ID_STATION" style="width:100%;">
-    </label>
-  </div>
-
-  <label style="display:block; margin-top:8px;">Adresse API
-    <input type="text" name="adresse_api" id="adresse_api" placeholder="https://…/api/" style="width:100%;">
-  </label>
-
-  <label style="display:block; margin-top:8px;">Token
-    <textarea name="token" id="token" rows="3" style="width:100%;"></textarea>
-  </label>
-
-  <label style="display:block; margin-top:8px;">
-    <input type="checkbox" id="activation_envoi_api"> Activer l’envoi à l’API
-  </label>
-
-  <button type="submit" style="margin-top:12px;">Enregistrer</button>
-  <span id="cfgMsg" style="margin-left:8px;"></span>
-</form>
-
-<script>
-(async function(){
-  // Charger la config depuis /config.json
-  try{
-    const r = await fetch('/config.json');
-    if(!r.ok) throw new Error('Lecture config KO');
-    const c = await r.json();
-    document.getElementById('ssid_wifi').value   = c.ssid_wifi || '';
-    // pass_wifi masqué côté GET -> pour changer, on saisit un nouveau mdp
-    document.getElementById('IP_WIFI').value     = c.IP_WIFI || '';
-    document.getElementById('ID_STATION').value  = c.ID_STATION || '';
-    document.getElementById('adresse_api').value = c.adresse_api || '';
-    document.getElementById('token').value       = c.token || '';
-    document.getElementById('activation_envoi_api').checked = !!c.activation_envoi_api;
-  }catch(e){
-    console.log(e);
-    document.getElementById('cfgMsg').textContent = '❌ Impossible de charger la configuration';
-  }
-
-  // Soumission -> POST /config.save
-  document.getElementById('cfgForm').addEventListener('submit', async (ev)=>{
-    ev.preventDefault();
-    const fd = new FormData(ev.target);
-    fd.set('activation_envoi_api', document.getElementById('activation_envoi_api').checked ? '1' : '0');
-    const r = await fetch('/config.save', { method:'POST', body: fd });
-    const msg = document.getElementById('cfgMsg');
-    if(r.ok){
-      msg.textContent = '✅ Enregistré. Reconnexion Wi‑Fi si SSID/MdP changés…';
-      setTimeout(()=>location.reload(), 1200);
-    } else {
-      msg.textContent = '❌ Erreur d’enregistrement';
-    }
-  });
-})();
-</script>
-  <script>
-    async function majEtatCapteurs() {
-      try {
-        const r = await fetch('/etatcapteurs', { cache: 'no-store' });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const data = await r.json();
-        const m = data.modules || {};
-        const e = data.etat || {};
-        const onOff = v => v ? '<span class="toggle-btn active">ON</span>'
-                            : '<span class="toggle-btn">OFF</span>';
-
-        // ... ici tu peux aussi mettre à jour les autres lignes (BMP280, DHT22, etc.)
-        // Ligne API
-        document.getElementById('mod-api').innerHTML = onOff(m.api ?? 0);
-        document.getElementById('etat-api').textContent = (m.api ? 'Activée' : 'Désactivée');
-      } catch (err) {
-        console.error('majEtatCapteurs:', err);
-      }
-    }
-    document.addEventListener('DOMContentLoaded', majEtatCapteurs);
-    setInterval(majEtatCapteurs, 10000);
-    function attachToggleListeners() {
-      document.querySelectorAll('.toggle-btn').forEach(button => {
-        button.addEventListener('click', () => {
-          button.classList.toggle('active');
-          if (button.classList.contains('active')) {
-            button.textContent = 'Désactiver';
-            updateSensorConfig(button.dataset.sensor, 1);
-          } else {
-            button.textContent = 'Activer';
-            updateSensorConfig(button.dataset.sensor, 0);
-          }
-        });
-      });
-    }
-
-    async function refreshEtat(){
-      try{
-        const r = await fetch('/etatcapteurs',{cache:'no-store'});
-        if(!r.ok){ throw new Error('HTTP '+r.status); }
-        const j = await r.json();
-
-        // Helpers
-        const badge = v => `<span class="${v? 'ok':'ko'}">${v? 'OK':'KO'}</span>`;
-        const set = (id, html) => { const e=document.getElementById(id); if(e) e.innerHTML = html; };
-
-        // Modules (activations)
-        if (j.modules){
-          set('m_bmp280', badge(!!j.modules.bmp280));
-          set('m_dht22',  badge(!!j.modules.dht22));
-          set('m_anemo',  badge(!!j.modules.anemo));
-          set('m_girou',  badge(!!j.modules.girou));
-          set('m_pluvio', badge(!!j.modules.pluvio));
-          set('m_tension',badge(!!j.modules.tension));
-          set('m_bitvie', badge(!!j.modules.bitvie));
-          set('m_sht40',  badge(!!j.modules.sht40));
-        }
-
-        // États capteurs + tensions
-        if (j.etat){
-          set('e_bmp280', badge(!!j.etat.bmp280));
-          set('e_dht22',  badge(!!j.etat.dht22));
-          set('e_anemo',  badge(!!j.etat.anemo));
-          set('e_girou',  badge(!!j.etat.girou));
-          set('e_pluvio', badge(!!j.etat.pluvio));
-          set('e_sht40',  badge(!!j.etat.sht40));
-
-          // Détails texte (facultatif)
-          set('d_bmp280', j.etat.bmp280 ? 'Capteur OK' : 'Aucune lecture valide');
-          set('d_dht22',  j.etat.dht22  ? 'Capteur OK' : 'Lecture KO');
-          set('d_anemo',  j.etat.anemo  ? 'Pulses détectés' : 'Aucun top');
-          set('d_girou',  j.etat.girou  ? 'Position détectée' : 'Indéterminée');
-          set('d_pluvio', j.etat.pluvio ? 'Bascule détectée' : 'Aucune bascule');
-          set('d_sht40',  j.etat.sht40  ? 'Capteur OK' : 'Aucune lecture valide');
-
-          // Tensions
-          if (typeof j.etat.tension_solaire === 'number')
-            set('vsol', j.etat.tension_solaire.toFixed(2));
-          if (typeof j.etat.tension_batterie === 'number')
-            set('vbat', j.etat.tension_batterie.toFixed(2));
-        }
-
-        const now = new Date();
-        set('lastUpdate', 'Dernière mise à jour: '+
-          now.toLocaleDateString()+' '+now.toLocaleTimeString());
-      }catch(e){
-        console.error(e);
-      }
-    }
-    attachToggleListeners();
-    setInterval(refreshEtat, 2000);
-    refreshEtat();
-
-      document.addEventListener('DOMContentLoaded', () => {
-      document.querySelectorAll('.toggle-btn').forEach(button => {
-        button.addEventListener('click', () => {
-          button.classList.toggle('active');
-          if (button.classList.contains('active')) {
-            button.textContent = 'Activer';
-            updateSensorConfig(button.dataset.sensor, 1);
-          } else {
-            button.textContent = 'Désactiver';
-            updateSensorConfig(button.dataset.sensor, 0);
-          }
-        });
-      });
-    });
-
-
-    function updateSensorConfig(sensor, status) {
-      fetch('/update_config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `${sensor}=${status}`
-      }).catch(err => console.error('Erreur fetch:', err));
-    }
-
-    /** Liste des clés attendues par /update_config */
-const MODULES = ["bmp280","dht22","sht40","anemo","girou","pluvio","tension","bitvie","api"];
-let state = {}; // {key: 0|1}
-
-/** Rend un bouton ON/OFF uniforme */
-function renderBtn(key, on) {
-  const cls = on ? 'toggle-btn active' : 'toggle-btn';
-  const label = on ? 'ON' : 'OFF';
-  return `<button type="button" class="${cls}" data-key="${key}">${label}</button>`;
-}
-
-/** Applique l'état courant à l'UI (tous les boutons) */
-function applyStateToUI() {
-  for (const k of MODULES) {
-    const cell = document.getElementById('mod-' + k);
-    if (!cell) continue;
-    cell.innerHTML = renderBtn(k, !!state[k]);
-  }
-  // Optionnel: mets à jour la colonne "Etat" si tu veux (e.g., e.bmp280)
-}
-
-/** Charge l'état depuis /etatcapteurs */
-async function loadState() {
-    const r = await fetch('/etatcapteurs', { cache: 'no-store' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
-    const m = (data && data.modules) ? data.modules : {};
-
-    state = {
-      bmp280: m.bmp280 ? 1 : 0,
-      dht22:  m.dht22 ? 1 : 0,
-      sht40:  m.sht40 ? 1 : 0,
-      anemo:  m.anemo ? 1 : 0,
-      girou:  m.girou ? 1 : 0,
-      pluvio: m.pluvio ? 1 : 0,
-      tension:m.tension ? 1 : 0,
-      bitvie: m.bitvie ? 1 : 0,
-      api:    m.api ? 1 : 0
-    };
-
-    applyStateToUI();
-  }
-
-  /** Envoie l'état complet au backend
-  * IMPORTANT : /update_config considère "champ absent" = 0,
-  * donc on doit envoyer TOUS les modules qui doivent rester à 1.
-  */
-  async function saveState() {
-    const form = new URLSearchParams();
-    if (state.bmp280) form.append('bmp280', '1');
-    if (state.dht22)  form.append('dht22',  '1');
-    if (state.sht40)  form.append('sht40',  '1');
-    if (state.anemo)  form.append('anemo',  '1');
-    if (state.girou)  form.append('girou',  '1');
-    if (state.pluvio) form.append('pluvio', '1');
-    if (state.tension)form.append('tension','1');
-    if (state.bitvie) form.append('bitvie', '1');
-    if (state.api)    form.append('api',    '1');
-
-    const res = await fetch('/update_config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form.toString()
-    });
-    if (!res.ok) throw new Error('POST /update_config ' + res.status);
-  }
-
-  /** Gestion du clic sur n'importe quel bouton toggle */
-  document.addEventListener('click', async (e) => {
-    const btn = e.target.closest('.toggle-btn');
-    if (!btn) return;
-
-    const key = btn.dataset.key;
-    if (!MODULES.includes(key)) return;
-
-    // Optimisme : inverse localement
-    state[key] = state[key] ? 0 : 1;
-    applyStateToUI();
-
-    // Enregistre (en postant l'état COMPLET)
-    try {
-      await saveState();
-    } catch (err) {
-      console.error(err);
-      // Retour arrière si échec
-      state[key] = state[key] ? 0 : 1;
-      applyStateToUI();
-      alert("Échec de la sauvegarde de la configuration (" + err.message + ")");
-    }
-  });
-
-  /** Init */
-  document.addEventListener('DOMContentLoaded', loadState);
-
-  </script>
-</section>
 </body>
-</container-fluid>
 </html>

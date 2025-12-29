@@ -1,0 +1,126 @@
+
+
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<link rel="shortcut icon" href="/images/logo_meteo.png" />
+<title>Station METEOSPIT.fr ESP32 — ADC live</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+    :root{--bg:#0f172a;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--accent:#22c55e;--danger:#ef4444;--link:#60a5fa;--line:#1f2937}
+    html,body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;line-height:1.45;margin:0}
+    a{color:var(--link);text-decoration:none} a:hover{text-decoration:underline}
+    header{display:flex;gap:1rem;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--line);background:#0b1220;position:sticky;top:0;z-index:10}
+    nav a{margin-right:1rem;color:var(--muted)} nav a.active, nav a:hover{color:var(--text)}
+    .wrap{max-width:1100px;margin:0 auto;padding:1rem}
+    h1{font-size:1.5rem;margin:0.25rem 0 0.75rem}
+    h2{font-size:1.1rem;margin:1.25rem 0 0.5rem;color:#d1d5db}
+    .grid{display:grid;grid-template-columns:1fr;gap:1rem}
+    @media(min-width:900px){.grid{grid-template-columns:2fr 1fr}}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:12px; padding:1rem}
+    .muted{color:var(--muted);font-size:.9rem}
+    table{width:100%;border-collapse:collapse}
+    th,td{border-bottom:1px solid var(--line);padding:.55rem .5rem;text-align:left;vertical-align:top}
+    th{color:#d1d5db;font-weight:600}
+    .pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;padding:.15rem .6rem;font-size:.8rem;border:1px solid var(--line)}
+    .ok{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.35);color:#86efac}
+    .ko{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.35);color:#fca5a5}
+    .btn{appearance:none;border:1px solid var(--line);background:#0e1628;color:var(--text);border-radius:10px;padding:.5rem .8rem;cursor:pointer}
+    .btn.primary{background:#0b5; border-color:#094;}
+    .btn.danger{background:#922;border-color:#b33}
+    .row{display:flex;gap:.5rem;flex-wrap:wrap}
+    .field{display:flex;flex-direction:column;gap:.25rem;margin:.4rem 0;min-width:220px;flex:1}
+    input[type="text"],input[type="password"],input[type="number"],input[type="url"]{background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:.55rem .6rem}
+    .switch{position:relative;display:inline-block;width:44px;height:24px;vertical-align:middle}
+    .switch input{display:none}
+    .slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#334155;border-radius:999px;transition:.18s}
+    .slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.18s}
+    input:checked + .slider{background:#16a34a}
+    input:checked + .slider:before{transform:translateX(20px)}
+    .right{display:flex;justify-content:flex-end}
+    .small{font-size:.85rem}
+    form{margin:0}
+</style>
+</head>
+<body>
+  <h1>Station METEOSPIT.fr ESP32 — ADC en direct</h1>
+  <nav>
+    <a href="/">Accueil</a>
+    <a href="/config">Configuration</a>
+    <a href="/config/vane">Girouette</a>
+    <a href="/status.json">Status JSON</a>
+  </nav>
+
+  <div class="grid">
+    <div class="card">
+      <h2>⚡ Solaire (GPIO35)</h2>
+      <div class="value" id="v_solar">— V</div>
+      <div class="sub">
+        <div>V_adc: <span id="v_adc_solar">—</span> V</div>
+        <div>raw: <span id="raw_solar">—</span></div>
+      </div>
+      <div class="bar"><div class="fill" id="bar_solar" style="width:0%">0%</div></div>
+      <small>Facteur diviseur: ~3.1277 (100k/47k)</small>
+    </div>
+
+    <div class="card">
+      <h2>🔋 Batterie (GPIO34)</h2>
+      <div class="value" id="v_batt">— V</div>
+      <div class="sub">
+        <div>V_adc: <span id="v_adc_batt">—</span> V</div>
+        <div>raw: <span id="raw_batt">—</span></div>
+      </div>
+      <div class="bar"><div class="fill" id="bar_batt" style="width:0%">0%</div></div>
+      <small>Facteur diviseur: ~3.0 (200k/100k)</small>
+    </div>
+  </div>
+
+  <p><small>Actualisation toutes les 500 ms — en cas d’OTA, la page peut figer temporairement.</small></p>
+
+<script>
+function fmt(v){ return (isNaN(v)?'—':(+v).toFixed(2)); }
+function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+
+// Ajuste les bornes de visualisation (adapter à ton cas réel)
+const MAX_SOLAR = 18.0;   // tension max solaire attendue (côté source)
+const MAX_BATT  = 4.5;    // tension max batterie
+
+async function poll(){
+  try{
+    const r = await fetch('/adc/live',{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j = await r.json();
+
+    // Solaire
+    const vSolar = j.solar?.v_corr ?? NaN;
+    const vAdcSolar = j.solar?.v_adc ?? NaN;
+    const rawSolar  = j.solar?.raw ?? NaN;
+    document.getElementById('v_solar').textContent = fmt(vSolar)+' V';
+    document.getElementById('v_adc_solar').textContent = fmt(vAdcSolar);
+    document.getElementById('raw_solar').textContent = rawSolar;
+    const pctSolar = clamp((vSolar / MAX_SOLAR) * 100, 0, 100);
+    const barSolar = document.getElementById('bar_solar');
+    barSolar.style.width = pctSolar.toFixed(0)+'%';
+    barSolar.textContent = pctSolar.toFixed(0)+'%';
+
+    // Batterie
+    const vBatt = j.batt?.v_corr ?? NaN;
+    const vAdcBatt = j.batt?.v_adc ?? NaN;
+    const rawBatt  = j.batt?.raw ?? NaN;
+    document.getElementById('v_batt').textContent = fmt(vBatt)+' V';
+    document.getElementById('v_adc_batt').textContent = fmt(vAdcBatt);
+    document.getElementById('raw_batt').textContent = rawBatt;
+    const pctBatt = clamp((vBatt / MAX_BATT) * 100, 0, 100);
+    const barBatt = document.getElementById('bar_batt');
+    barBatt.style.width = pctBatt.toFixed(0)+'%';
+    barBatt.textContent = pctBatt.toFixed(0)+'%';
+  }catch(e){
+    // En cas d’OTA ou d’erreur réseau, on ne casse pas l’UI
+    console.debug('poll error', e);
+  }finally{
+    setTimeout(poll, 500);
+  }
+}
+poll();
+</script>

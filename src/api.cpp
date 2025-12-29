@@ -84,6 +84,9 @@ Measurements g_measurements;
 PushResult g_lastPushRow;
 PushResult g_lastPushEtat;
 
+// Handle de la tâche background pour pouvoir la suspendre/resumer depuis main
+TaskHandle_t stationInfoTaskHandle = NULL;
+
 // définitions des globals utilisés par buildStationJsonPayload()
 int g_lastPushHttpCode = 0;
 String g_lastPushHttpBody = "";
@@ -525,11 +528,18 @@ void setupLocalStationApiHandler(WebServer &server) {
 // Tâche FreeRTOS pour récupérer les infos de la station en arrière-plan
 static void stationInfoTask(void *pvParameters) {
   (void) pvParameters;
+  extern volatile bool otaInProgress;
   const TickType_t delayTicks = pdMS_TO_TICKS(FETCH_INFO_MS);
   // boucle permanente sur core 0
   for (;;) {
+    // attendre la fin d'une OTA si en cours (attente coopérative)
+    while (otaInProgress) {
+      vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
     // fetch (bloquant possible) — ok sur core 0
     fetchStationInfoFromRemote();
+
     // attendre la prochaine itération
     vTaskDelay(delayTicks);
   }
@@ -547,7 +557,7 @@ void startStationInfoBackgroundTask() {
     8192,
     NULL,
     1,
-    NULL,
+    &stationInfoTaskHandle,
     0 // core 0
   );
 }

@@ -48,6 +48,9 @@ struct StationInfo {
 // variable définie dans api.cpp
 extern StationInfo g_stationInfo;
 
+// Flag global pour indiquer qu'une OTA est en cours (défini dans main.cpp)
+extern volatile bool otaInProgress;
+
 // Fonctions exposées (implémentées dans api.cpp)
 void setupLocalStationApiHandler(WebServer &server);
 void maybeRefreshStationInfo();

@@ -3,8 +3,6 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="shortcut icon" href="/images/logo_meteo.png" />
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <title>Station METEOSPIT.fr ESP32 — Accueil</title>
   <style>
     :root {
@@ -22,10 +20,15 @@
     html, body { height: 100%; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Noto Sans', 'Helvetica Neue', Arial, 'Apple Color Emoji', 'Segoe UI Emoji'; background: linear-gradient(180deg, var(--bg), #030712 60%); color: var(--text); }
 
-    header { position: sticky; top:0; z-index: 20; background: rgba(8, 13, 23, 0.7); backdrop-filter: blur(8px); border-bottom: 1px solid var(--card-border); }
+    header {
+      position: sticky; top:0; z-index: 20;
+      background: rgba(8, 13, 23, 0.7);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--card-border);
+    }
     .wrap { max-width: 1100px; margin: 0 auto; padding: 0 16px; }
     .topbar { display:flex; align-items:center; gap:16px; padding: 12px 0; }
-    .logo { display:flex; align-items:center; gap:10px; text-decoration:none; color: var(--text); }
+    .logo { display:flex; align-items:center; gap:10px; }
     .logo img { height: 36px; width:auto; }
     .site-title { font-weight: 600; letter-spacing: 0.2px; }
     nav { margin-left:auto; display:flex; gap:12px; }
@@ -50,21 +53,13 @@
       .grid { grid-template-columns: 1fr; }
       nav { gap:6px; }
       nav a { padding:6px 8px; }
-        .wifi-signal { display:inline-flex; align-items:flex-end; gap:4px; }
-    .wifi-signal .bar { width:8px; background:#e6e6e6; border-radius:2px; }
-    .wifi-signal .bar.on { background:#2b8a3e; }
-    .wifi-signal .bar.h1 { height:8px; }
-    .wifi-signal .bar.h2 { height:12px; }
-    .wifi-signal .bar.h3 { height:16px; }
-    .wifi-signal .bar.h4 { height:20px; }
-    .push-body { max-height: 4.5rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display:block; }
     }
   </style>
 </head>
 <body>
   <header>
     <div class="wrap topbar">
-      <!-- Logo conservé en haut à gauche -->
+      <!-- Logo conservé en haut à gauche: remplacez src ci-dessous par votre chemin réel si besoin -->
       <a class="logo" href="/" aria-label="Accueil">
         <img src="images/logo_meteo_head6.png" alt="Logo" />
         <span class="site-title">Station METEOSPIT.fr ESP32</span>
@@ -86,52 +81,48 @@
       <section class="card" style="grid-column: span 4;">
         <h2>État réseau</h2>
         <div class="kv">
-          <div id="wifiSignal" class="wifi-signal" aria-hidden="true"></div>
-          <div>RSSI</div><div class="value" id="wifiRssi">-</div>
-          <div>Qualité</div><div class="value" id="wifiPct">- %</div>
+          <div>RSSI</div><div class="value">-</div>
+          <div>Qualité</div><div class="value">- %</div>
         </div>
       </section>
 
       <section class="card" style="grid-column: span 8;">
         <h2>Derniers envois</h2>
-        <div class="mb-2">
-          <strong>Envoi ligne (row)</strong>
-          <div id="last_push_row" class="mt-1 small text-muted">—</div>
-        </div>
-
-        <div>
-          <strong>Envoi état capteurs (etat)</strong>
-          <div id="last_push_etat" class="mt-1 small text-muted">—</div>
+        <div class="kv">
+          <div>Envoi ligne (row)</div><div class="value">—</div>
+          <div>Envoi état capteurs (etat)</div><div class="value">—</div>
         </div>
       </section>
-
 
       <section class="card" style="grid-column: span 12;">
         <h2>Données en direct</h2>
         <div class="kv">
-          <div>Date et heure</div><div class="value" id="datetime">-</div>
-          <div>Température DHT22</div><div class="value" id="temp">- °C</div>
-          <div>Humidité</div><div class="value" id="hum">- %</div>
-          <div>Température BMP280</div><div class="value" id="temp280">- °C</div>
-          <div>Pression</div><div class="value" id="volt">- hPa</div>
-          <div>Point de rosée</div><div class="value" id="pointderosee">- °C</div>
-          <div>Tension Batterie</div><div class="value" id="tensionBat">- V</div>
-          <div>Tension Panneau Solaire</div><div class="value" id="tensionSol">- V</div>
-          <div>Bit de vie</div><div class="value" id="tpsvie">-</div>
-          <div>Vitesse du vent</div><div class="value" id="anemometre">- Km/h</div>
-          <div>Rafale</div><div class="value" id="rafale">- Km/h</div>
-          <div>Pluviomètre</div><div class="value" id="pluviometre">- mm</div>
+          <div>Date et heure</div><div class="value">-</div>
+          <div>Température DHT22</div><div class="value">- °C</div>
+          <div>Humidité</div><div class="value">- %</div>
+          <div>Température BMP280</div><div class="value">- °C</div>
+          <div>Pression</div><div class="value">- hPa</div>
+          <div>Point de rosée</div><div class="value">- °C</div>
+          <div>Tension Batterie</div><div class="value">- V</div>
+          <div>Tension Panneau Solaire</div><div class="value">- V</div>
+          <div>Bit de vie</div><div class="value">-</div>
+          <div>Vitesse du vent</div><div class="value">- Km/h</div>
+          <div>Rafale</div><div class="value">- Km/h</div>
+          <div>Pluviomètre</div><div class="value">- mm</div>
         </div>
       </section>
     </div>
 
+    <p style="margin-top:16px;">
+      <span class="badge">Interface alignée sur la mise en page des pages de configuration</span>
+    </p>
   </main>
 
   <footer>
     © METEOSPIT.fr — ESP32
   </footer>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 
   <script>
     function rssiToPct(rssi) {

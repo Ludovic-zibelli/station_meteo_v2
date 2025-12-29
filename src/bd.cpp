@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <sqlite3.h>
 #include "bd.h"
+#include "bd_mgr.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 extern sqlite3 *db;
 
@@ -21,6 +24,7 @@ bool updateStationDirect(
     float rafale
 ) {
     sqlite3_stmt *stmt;
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
     const char *sql =
         "UPDATE station_direct SET "
         "tempdht22=?, humiditer=?, tempbmp280=?, pression=?, lumiere=?, "
@@ -45,9 +49,11 @@ bool updateStationDirect(
 
         if (sqlite3_step(stmt) == SQLITE_DONE) {
             sqlite3_finalize(stmt);
+            if (g_dbMutex) xSemaphoreGive(g_dbMutex);
             return true;
         }
         sqlite3_finalize(stmt);
+        if (g_dbMutex) xSemaphoreGive(g_dbMutex);
     }
     return false;
 }
@@ -55,6 +61,7 @@ bool updateStationDirect(
 //mise a jour de l'anémomètre uniquement
 bool updateAnemometre(int id, float anemometre) {
     sqlite3_stmt *stmt = nullptr;
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
     const char *sql = "UPDATE station_direct SET anemometre=? WHERE id=?;";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -74,11 +81,13 @@ bool updateAnemometre(int id, float anemometre) {
     // ok = ok && (sqlite3_changes(db) > 0);
 
     sqlite3_finalize(stmt);
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
     return ok;
 }
 
 bool updateTensions(int id, float tension_batterie, float tension_solaire) {
     sqlite3_stmt *stmt;
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
     const char *sql = "UPDATE tensions SET tension_batterie=?, tension_solaire=? WHERE id=?;";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_double(stmt, 1, tension_batterie);
@@ -88,9 +97,11 @@ bool updateTensions(int id, float tension_batterie, float tension_solaire) {
 
         if (sqlite3_step(stmt) == SQLITE_DONE) {
             sqlite3_finalize(stmt);
+            if (g_dbMutex) xSemaphoreGive(g_dbMutex);
             return true;
         }
         sqlite3_finalize(stmt);
+        if (g_dbMutex) xSemaphoreGive(g_dbMutex);
     }
     return false;
 }
@@ -105,6 +116,7 @@ bool updateEtatCapteurs(int id,
                       "capteur_girou=?, capteur_anemo=?,  tension_solaire=?, tension_batterie=? "
                       "WHERE id=?;";
 
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_int(stmt, 1, capteur_dht22);
         sqlite3_bind_int(stmt, 2, capteur_bmp280);
@@ -118,9 +130,11 @@ bool updateEtatCapteurs(int id,
 
         if (sqlite3_step(stmt) == SQLITE_DONE) {
             sqlite3_finalize(stmt);
+            if (g_dbMutex) xSemaphoreGive(g_dbMutex);
             return true;
         }
         sqlite3_finalize(stmt);
+        if (g_dbMutex) xSemaphoreGive(g_dbMutex);
     }
     return false;
 }
@@ -128,8 +142,8 @@ bool updateEtatCapteurs(int id,
 
 bool updateModulesInDB(int id, int bmp280, int dht22, int sht40, int anemo, int girou, int pluvio, int tension, int bitvie)
  {
-  sqlite3_stmt *stmt;
- 
+    sqlite3_stmt *stmt;
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
 const char *sql =
   "UPDATE etatcapteurs SET module_bmp280=?, module_dht22=?, module_sht40=?, "
   "module_anemo=?, module_girou=?, module_pluvio=?, module_tension=?, module_bitvie=? WHERE id=?;";
@@ -151,15 +165,17 @@ const char *sql =
   sqlite3_bind_int(stmt, 9, id);
 
 
-  bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
-  if (!ok) Serial.printf("Erreur step (updateModulesInDB): %s\n", sqlite3_errmsg(db));
-  sqlite3_finalize(stmt);
-  return ok;
+    bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
+    if (!ok) Serial.printf("Erreur step (updateModulesInDB): %s\n", sqlite3_errmsg(db));
+    sqlite3_finalize(stmt);
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    return ok;
 }
 
 
 bool updateActivationApiInDB(int id, int activation_envoi_api) {
     sqlite3_stmt *stmt;
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
     const char *sql = "UPDATE config SET activation_envoi_api = ? WHERE id = ?;";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -173,10 +189,12 @@ bool updateActivationApiInDB(int id, int activation_envoi_api) {
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         Serial.printf("❌ Erreur step (updateActivationApiInDB): %s\n", sqlite3_errmsg(db));
         sqlite3_finalize(stmt);
+        if (g_dbMutex) xSemaphoreGive(g_dbMutex);
         return false;
     }
 
     sqlite3_finalize(stmt);
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
     return true;
 }
 
@@ -187,10 +205,12 @@ bool updateAppConfig(const AppConfig& c) {
     "ssid_wifi=?, pass_wifi=?, IP_WIFI=?, ID_STATION=?, adresse_api=?, token=?, activation_envoi_api=? "
     "WHERE id=1;";
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-    // Serial.printf("Prepare failed: %s\n", sqlite3_errmsg(db));
-    return false;
-  }
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        // Serial.printf("Prepare failed: %s\n", sqlite3_errmsg(db));
+        if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+        return false;
+    }
 
   // bind 1..7
   sqlite3_bind_text(stmt, 1, c.ssid_wifi.c_str(),   -1, SQLITE_TRANSIENT);
@@ -201,8 +221,9 @@ bool updateAppConfig(const AppConfig& c) {
   sqlite3_bind_text(stmt, 6, c.token.c_str(),       -1, SQLITE_TRANSIENT);
   sqlite3_bind_int (stmt, 7, c.activation_envoi_api);
 
-  bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
-  sqlite3_finalize(stmt);
-  return ok;
+    bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
+    sqlite3_finalize(stmt);
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    return ok;
 }
 

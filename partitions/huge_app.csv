@@ -1,0 +1,13 @@
+# Partition table for OTA + SPIFFS (4MB flash layout)
+# name,   type, subtype, offset,   size, flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x190000,
+app1,     app,  ota_1,   0x1A0000, 0x190000,
+spiffs,   data, spiffs,  0x330000, 0xD0000,
+
+# Notes:
+# - This layout is sized for a 4MB flash (0x400000). Adjust sizes/offsets
+#   if your module has a different flash size.
+# - Keeps two OTA app partitions (app0/app1), an OTA data partition, and
+#   a large SPIFFS area. Suitable for network updates via espota / ElegantOTA.
