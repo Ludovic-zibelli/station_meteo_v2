@@ -16,6 +16,10 @@ static unsigned long g_apiCfgLoadedMs = 0;
 static const unsigned long API_CFG_TTL_MS = 60 * 1000UL;
 
 
+// --- Timeouts HTTP (ms) ---
+static constexpr uint32_t HTTP_CONNECT_TIMEOUT_MS  = 8000;   // délai connexion TCP/TLS
+static constexpr uint32_t HTTP_OPERATION_TIMEOUT_MS = 12000; // délai lecture/écriture HTTP
+
 
 // === Variables "runtime" avec les mêmes noms qu'avant ===
 String API_URL;                   // https://.../api/stationdirect/{STATION_ID}
@@ -29,30 +33,26 @@ String API_URL_STATION_METEOS;    // https://.../api/station_meteos/{STATION_ID}
 static String rtrimSlash(String s){ while (s.endsWith("/")) s.remove(s.length()-1); return s; }
 
 // Appeler cette fonction AU DÉMARRAGE et APRÈS /config.save
+
 void apiRefreshConfigFromDb() {
   AppConfig c;
-  if (!readAppConfig(c)) {         // lit table config id=1  [1](https://shiftup-my.sharepoint.com/personal/u058770_inetpsa_com/Documents/Fichiers%20Microsoft%20Copilot%20Chat/api.cpp)
-    Serial.println("[API] readAppConfig() KO");
-    return;
-  }
-
-  // Token
+  if (!readAppConfig(c)) { Serial.println("[API] readAppConfig() KO"); return; }
   API_KEY = c.token;
-
-  // ID station en ENTIER (si "2.0" en base -> 2)
   STATION_ID = String(c.id_station).toInt();
 
-  // Base URL genre "https://www.meteospit.fr/api"
-  String base = rtrimSlash(c.adresse_api);
+  String base = rtrimSlash(c.adresse_api); // <= doit être "https://www.meteospit.fr/api"
+  API_URL = base + "/stationdirect/" + String(STATION_ID);
+  API_URL_ETATSTATION = base + "/etatstationmeteo/1";
+  API_URL_STATION_METEOS = base + "/station_meteos/" + String(STATION_ID);
+  STATION_METEOS_PATH = "api/station_meteos/" + String(STATION_ID);
 
-  // Endpoints construits
-  API_URL                 = base + "/stationdirect/"     + String(STATION_ID);
-  API_URL_ETATSTATION     = base + "/etatstationmeteo/1";                 // ID = 1 imposé
-  API_URL_STATION_METEOS  = base + "/station_meteos/"    + String(STATION_ID);
-  STATION_METEOS_PATH     = "api/station_meteos/"        + String(STATION_ID);
-
-  Serial.printf("[API] cfg ok: STATION_ID=%d\n", STATION_ID);
+  // Ajoute ces logs :
+  Serial.printf("[API] base='%s'\n", base.c_str());
+  Serial.printf("[API] stationdirect='%s'\n", API_URL.c_str());
+  Serial.printf("[API] etatstation='%s'\n", API_URL_ETATSTATION.c_str());
+  Serial.printf("[API] station_meteos='%s'\n", API_URL_STATION_METEOS.c_str());
 }
+
 
 
 // S'assure que la config est chargée; la recharge si plus vieille que TTL
@@ -135,15 +135,35 @@ bool sendLatestRowToApi() {
     recordPushResult(g_lastPushRow, API_URL.c_str(), -1, "http.begin() failed");
     return false;
   }
+
+  
+  // 2) timeouts AVANT la requête
+  http.setConnectTimeout(HTTP_CONNECT_TIMEOUT_MS);
+  http.setTimeout(HTTP_OPERATION_TIMEOUT_MS);
+
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Accept", "application/json");
   if (API_KEY.length()) http.addHeader("X-API-KEY", API_KEY);
 
+
   int code = http.PUT(payload);
   String resp = http.getString();
-  http.end();
-  recordPushResult(g_lastPushRow, API_URL.c_str(), code, resp);
+
+  if (code < 200 || code >= 300) {
+    // Retente en POST si l'API le préfère
+    http.end();
+    if (http.begin(client, API_URL)) { // ou API_URL_ETATSTATION selon la fonction
+      http.addHeader("Content-Type", "application/json");
+      http.addHeader("Accept", "application/json");
+      if (API_KEY.length()) http.addHeader("X-API-KEY", API_KEY);
+      code = http.POST(payload);
+      resp = http.getString();
+      http.end();
+    }
+  }
+  recordPushResult(g_lastPushRow /*ou g_lastPushEtat*/, API_URL.c_str(), code, resp);
   return (code >= 200 && code < 300);
+
 }
 
 bool sendEtatCapteursToApi(
@@ -216,23 +236,36 @@ bool sendEtatCapteursToApi(
         return false;
     }
 
+    
+    // timeouts AVANT PUT/POST
+    http.setConnectTimeout(HTTP_CONNECT_TIMEOUT_MS);
+    http.setTimeout(HTTP_OPERATION_TIMEOUT_MS);
+
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Accept", "application/json");
     if (API_KEY.length()) {
         http.addHeader("X-API-KEY", API_KEY); // token issu de la DB
     }
 
+  
     int code = http.PUT(payload);
     String resp = http.getString();
-    http.end();
 
-    // 4) Journaliser le résultat pour tes handlers/local info
-    recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), code, resp);
-    g_lastPushHttpCode = code;
-    g_lastPushHttpBody = resp;
-    g_lastPushMillis   = millis();
-
+    if (code < 200 || code >= 300) {
+      // Retente en POST si l'API le préfère
+      http.end();
+      if (http.begin(client, API_URL)) { // ou API_URL_ETATSTATION selon la fonction
+        http.addHeader("Content-Type", "application/json");
+        http.addHeader("Accept", "application/json");
+        if (API_KEY.length()) http.addHeader("X-API-KEY", API_KEY);
+        code = http.POST(payload);
+        resp = http.getString();
+        http.end();
+      }
+    }
+    recordPushResult(g_lastPushRow /*ou g_lastPushEtat*/, API_URL.c_str(), code, resp);
     return (code >= 200 && code < 300);
+
 }
 
 bool sendLatestEtatStationMeteoToApi() {
@@ -436,7 +469,8 @@ String buildStationJsonPayload() {
   doc["wifi_bars"] = g_stationInfo.wifi_bars;
 
   // meta
-  doc["stationMeteo"] = "/api/station_meteos/2";
+  //doc["stationMeteo"] = "/api/station_meteos/2";
+  doc["stationMeteo"] = String("/") + STATION_METEOS_PATH;
   doc["last_push_code"] = g_lastPushHttpCode;
   if (g_lastPushHttpBody.length()) doc["last_push_body"] = g_lastPushHttpBody;
   doc["last_push_age_ms"] = (unsigned long)(millis() - g_lastPushMillis);

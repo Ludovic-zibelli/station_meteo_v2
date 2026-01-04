@@ -49,6 +49,54 @@
 
 #include <cstring> // IMPORTANT pour memcmp
 
+
+#include <Preferences.h>
+
+Preferences prefs;
+
+// Structure générique pour les min/max
+struct StatScalar {
+  float cur = NAN;      // valeur courante
+  float minDay = NAN;   // min du jour
+  float maxDay = NAN;   // max du jour
+  float minAll = NAN;   // record min absolu
+  float maxAll = NAN;   // record max absolu
+  time_t tMinDay = 0, tMaxDay = 0;
+  time_t tMinAll = 0, tMaxAll = 0;
+
+  void update(float v, time_t now) {
+    cur = v;
+    if (isnan(v)) return;
+    if (isnan(minDay) || v < minDay) { minDay = v; tMinDay = now; }
+    if (isnan(maxDay) || v > maxDay) { maxDay = v; tMaxDay = now; }
+    if (isnan(minAll) || v < minAll) { minAll = v; tMinAll = now; }
+    if (isnan(maxAll) || v > maxAll) { maxAll = v; tMaxAll = now; }
+  }
+
+  void resetDaily() {
+    minDay = NAN; maxDay = NAN;
+    tMinDay = tMaxDay = 0;
+  }
+};
+
+// Nos séries suivies
+StatScalar ST_tempExt;    // basé sur temp1 (BMP280)
+StatScalar ST_humExt;     // basé sur humiditer (DHT22)
+StatScalar ST_press;      // basé sur pression (BMP280)
+StatScalar ST_batt;       // basé sur tension_batterie
+StatScalar ST_solar;      // basé sur tension_solaire
+
+// Rafales
+float GUST_maxDay = 0.0f;
+float GUST_maxAll = 0.0f;
+int   GUST_dirDay = -1;   // en degrés, au moment du max jour
+int   GUST_dirAll = -1;   // en degrés, au moment du record absolu
+
+// Pour limiter l'usure NVS, on sauvegardera seulement si un record change
+static bool g_recordsDirty = false;
+static unsigned long g_lastSaveMs = 0;
+
+
 RTC_DS1307 rtc;
 
 WebServer server(80);
@@ -191,6 +239,69 @@ Modules mods{};      // état courant en mémoire
 Modules lastMods{};  // pour comparaison
 
 
+// --- Historique vent pour moyenne 10 min ---
+static const uint16_t WIND_BUF_SECS = 600; // 10 minutes
+static float g_windBuf[WIND_BUF_SECS];
+static uint16_t g_windIdx = 0;
+static bool g_windFilled = false;
+
+// --- Snapshots de cumul pluie ---
+static float g_rainCum_now = 0.0f;
+static float g_rainCum_t0h = 0.0f;        // il y a 1 heure
+static float g_rainCum_midnight = 0.0f;   // à 00:00 local du jour
+static float g_rainCum_t0w = 0.0f;        // il y a 7 jours
+
+// --- Horodatages pour savoir quand rafraîchir les snapshots ---
+static unsigned long t_lastWindPush = 0;   // pour pousser 1 échantillon/s
+static unsigned long t_lastHourMark = 0;
+static uint8_t lastDaySeen = 255;          // pour détecter le passage à minuit
+static uint16_t lastDoySeen = 65535;       // si tu veux aussi semaine glissante
+
+
+
+static inline float windAvg10min() {
+  uint16_t n = g_windFilled ? WIND_BUF_SECS : g_windIdx;
+  if (n == 0) return 0.0f;
+  double s = 0.0;
+  for (uint16_t i = 0; i < n; ++i) s += g_windBuf[i];
+  return (float)(s / (double)n);
+}
+static inline float rainHourMm()    { float d = g_rainCum_now - g_rainCum_t0h;       return d < 0 ? 0.0f : d; }
+static inline float rainDayMm()     { float d = g_rainCum_now - g_rainCum_midnight;  return d < 0 ? 0.0f : d; }
+static inline float rainWeekMm()    { float d = g_rainCum_now - g_rainCum_t0w;       return d < 0 ? 0.0f : d; }
+
+
+
+// --- PROTOTYPES (à mettre AVANT handleData) ---
+// Ne pas redonner de valeur par défaut ailleurs que ici
+static void addNum(String& json, const char* key, float v, unsigned int decimals = 1);
+static void addIntOrNull(String& json, const char* key, int v);
+
+// --- DÉFINITIONS (au-dessus ou en-dessous de handleData, peu importe) ---
+static void addNum(String& json, const char* key, float v, unsigned int decimals) {
+  json += ",\""; json += key; json += "\":";
+  if (isnan(v) || isinf(v)) {
+    json += "null";
+  } else {
+    // Forcer la bonne surcharge de String: (double, unsigned int)
+    json += String((double)v, (unsigned int)decimals);
+  }
+}
+
+static void addIntOrNull(String& json, const char* key, int v) {
+  json += ",\""; json += key; json += "\":";
+  // On code -1 (inconnu) en null pour le front
+  if (v < 0) json += "null";
+  else       json += String(v);
+}
+
+
+
+// Arrondir à 2 décimales (préserver NaN)
+static inline float round2f(float v) {
+  if (isnan(v)) return v;
+  return roundf(v * 100.0f) / 100.0f;
+}
 
 //Remise a l'heure du RTC avec la compilation de l'IDE
 
@@ -328,56 +439,145 @@ void handleRoot() {
 }
 
 
+// Conversion RSSI -> pourcentage (approximation douce)
+static int rssiToPercent(int rssi) {
+  // -100 dBm => 0%,  -50 dBm => 100%
+  int pct = (rssi <= -100) ? 0 : (rssi >= -50 ? 100 : 2 * (rssi + 100));
+  if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+  return pct;
+}
+static int pctToBars(int pct) {
+  if (pct >= 80) return 4;
+  if (pct >= 55) return 3;
+  if (pct >= 30) return 2;
+  if (pct >  0)  return 1;
+  return 0;
+}
+
+
+
+
+
+
 void handleData() {
   sqlite3_stmt *stmt;
   String json = "{";
 
   // Lecture de la dernière ligne de station_direct
-  const char *sql = "SELECT tempdht22, humiditer, pression, tempbmp280, timestamp, tpsvie, pointderosee, anemometre, pluviometre, rafale FROM station_direct ORDER BY id DESC LIMIT 1;";
+  const char *sql =
+    "SELECT tempdht22, humiditer, pression, tempbmp280, "
+    "timestamp, tpsvie, pointderosee, "
+    "anemometre, girouette, pluviometre, rafale "
+    "FROM station_direct ORDER BY id DESC LIMIT 1;";
+
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-      float temp = sqlite3_column_double(stmt, 0);
-      float hum  = sqlite3_column_double(stmt, 1);
-      float press = sqlite3_column_double(stmt, 2);
-      float temp280 = sqlite3_column_double(stmt, 3);
-      String ts = (const char *)sqlite3_column_text(stmt, 4);
-      float tpsvie = sqlite3_column_double(stmt, 5);
-      float pointderosee = sqlite3_column_double(stmt, 6);
-      float anemometre = sqlite3_column_double(stmt, 7);
-      old_vitesse = anemometre;
-      float pluviometre = sqlite3_column_double(stmt, 8);
-      float rafale = sqlite3_column_double(stmt, 9);
+      float temp         = round2f(sqlite3_column_double(stmt, 0));
+      float hum          = round2f(sqlite3_column_double(stmt, 1));
+      float press        = round2f(sqlite3_column_double(stmt, 2));
+      float temp280      = round2f(sqlite3_column_double(stmt, 3));
+      String ts          = (const char *)sqlite3_column_text(stmt, 4);
+      float tpsvie       = round2f(sqlite3_column_double(stmt, 5));
+      float pointderosee = round2f(sqlite3_column_double(stmt, 6));
+      float anemometre   = round2f(sqlite3_column_double(stmt, 7));
+      float dir_db       = round2f(sqlite3_column_double(stmt, 8));
+      old_vitesse        = anemometre;
+      float pluviometre  = round2f(sqlite3_column_double(stmt, 9));
+      float rafale       = round2f(sqlite3_column_double(stmt, 10));
 
-      json += "\"temperature\":" + String(temp) + ",";
-      json += "\"humidite\":" + String(hum) + ",";
-      json += "\"pression\":" + String(press) + ",";
-      json += "\"tempbmp280\":" + String(temp280) + ",";
-      json += "\"datetime\":\"" + ts + "\",";
-      json += "\"tpsvie\":" + String(tpsvie) + ",";
-      json += "\"pointderosee\":" + String(pointderosee) + ",";
-      json += "\"anemometre\":" + String(anemometre) + ",";
-      json += "\"pluviometre\":" + String(pluviometre) + ",";
-      json += "\"rafale\":" + String(rafale) + ","; 
+      // ★ Corriger les opérateurs (&&, <, >)
+      auto isValidDeg = [](float d) {
+        return !isnan(d) && d >= 0.0f && d < 360.0f;
+      };
+
+      extern int degret;
+      float directionFinale = isValidDeg((float)degret) ? (float)degret
+                            : (isValidDeg(dir_db)       ? dir_db : 0.0f);
+
+      // --- Corps JSON principal ---
+      json += "\"temperature\":"  + String(temp, 2) + ",";
+      json += "\"humidite\":"     + String(hum, 2) + ",";
+      json += "\"pression\":"     + String(press, 2) + ",";
+      json += "\"tempbmp280\":"   + String(temp280, 2) + ",";
+      json += "\"datetime\":\""   + ts + "\",";
+      json += "\"tpsvie\":"       + String(tpsvie, 2) + ",";
+      json += "\"pointderosee\":" + String(pointderosee, 2) + ",";
+      json += "\"anemometre\":"   + String(anemometre, 2) + ",";
+      json += "\"pluviometre\":"  + String(pluviometre, 2) + ",";
+      json += "\"rafale\":"       + String(rafale, 2);
+
+      // Ajouts UI (RAM)
+      json += ",\"moyenne10min\":" + String(windAvg10min(), 2);
+      json += ",\"direction\":"    + String(directionFinale, 0);
+      json += ",\"pluieHeure\":"   + String(rainHourMm(), 2);
+      json += ",\"pluieJour\":"    + String(rainDayMm(), 2);
+      json += ",\"pluieSemaine\":" + String(rainWeekMm(), 2);
+
+      // Wi‑Fi
+      int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
+      int pct  = rssiToPercent(rssi);
+      int bars = pctToBars(pct);
+      json += ",\"wifi_rssi\":"    + String(rssi);
+      json += ",\"wifi_percent\":" + String(pct);
+      json += ",\"wifi_bars\":"    + String(bars);
+      // --- Min/Max JOUR + All-time (scalaires) ---
+      addNum(json, "t_min_day", ST_tempExt.minDay, 1);
+      addNum(json, "t_max_day", ST_tempExt.maxDay, 1);
+      addNum(json, "t_min_all", ST_tempExt.minAll, 1);
+      addNum(json, "t_max_all", ST_tempExt.maxAll, 1);
+
+      addNum(json, "h_min_day", ST_humExt.minDay, 0);
+      addNum(json, "h_max_day", ST_humExt.maxDay, 0);
+      addNum(json, "h_min_all", ST_humExt.minAll, 0);
+      addNum(json, "h_max_all", ST_humExt.maxAll, 0);
+
+      addNum(json, "p_min_day", ST_press.minDay, 1);
+      addNum(json, "p_max_day", ST_press.maxDay, 1);
+      addNum(json, "p_min_all", ST_press.minAll, 1);
+      addNum(json, "p_max_all", ST_press.maxAll, 1);
+
+      addNum(json, "vb_min_day", ST_batt.minDay, 2);
+      addNum(json, "vb_max_day", ST_batt.maxDay, 2);
+      addNum(json, "vb_min_all", ST_batt.minAll, 2);
+      addNum(json, "vb_max_all", ST_batt.maxAll, 2);
+
+      addNum(json, "vs_min_day", ST_solar.minDay, 2);
+      addNum(json, "vs_max_day", ST_solar.maxDay, 2);
+      addNum(json, "vs_min_all", ST_solar.minAll, 2);
+      addNum(json, "vs_max_all", ST_solar.maxAll, 2);
+
+      // Rafales + directions
+      addNum(json, "gust_max_day", GUST_maxDay, 1);
+      addIntOrNull(json, "gust_dir_day", GUST_dirDay);
+      addNum(json, "gust_max_all", GUST_maxAll, 1);
+      addIntOrNull(json, "gust_dir_all", GUST_dirAll);
+
+
     }
     sqlite3_finalize(stmt);
   }
 
   // Lecture de la dernière ligne de tensions
-  const char *sql2 = "SELECT tension_batterie, tension_solaire FROM tensions ORDER BY id DESC LIMIT 1;";
+  const char *sql2 =
+    "SELECT tension_batterie, tension_solaire "
+    "FROM tensions ORDER BY id DESC LIMIT 1;";
+
   if (sqlite3_prepare_v2(db, sql2, -1, &stmt, NULL) == SQLITE_OK) {
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-      float tension_bat = sqlite3_column_double(stmt, 0);
-      float tension_sol = sqlite3_column_double(stmt, 1);
+      float tension_bat = round2f(sqlite3_column_double(stmt, 0));
+      float tension_sol = round2f(sqlite3_column_double(stmt, 1));
+
+      // ★ Ajouter une virgule si on n'est plus au début de l'objet
+      if (!json.endsWith("{")) json += ",";
 
       json += "\"tension_batterie\":" + String(tension_bat) + ",";
-      json += "\"tension_solaire\":" + String(tension_sol);
+      json += "\"tension_solaire\":"  + String(tension_sol);
     }
     sqlite3_finalize(stmt);
   }
 
-  // Enlève la virgule finale si besoin (optionnel)
+  // Fermeture propre
   if (json.endsWith(",")) json.remove(json.length() - 1);
-
   json += "}";
 
   server.send(200, "application/json", json);
@@ -470,6 +670,49 @@ void handleEtatCapteurs() {
 static String g_ntp_server = "pool.ntp.org";
 static String g_timezone   = "Europe/Paris"; // ta règle tz CEST est déjà configurée plus haut
 
+
+// NVS pour la conf "app"
+static Preferences prefsCfg;
+
+// Conversion "simple" IANA -> POSIX (complète ce map si tu veux d'autres zones)
+static String ianaToPosix(const String& tz) {
+  // Quelques exemples les plus utiles
+  if (tz.equalsIgnoreCase("Europe/Paris"))    return "CET-1CEST,M3.5.0/2,M10.5.0/3";
+  if (tz.equalsIgnoreCase("Europe/Berlin"))   return "CET-1CEST,M3.5.0/2,M10.5.0/3";
+  if (tz.equalsIgnoreCase("Europe/Madrid"))   return "CET-1CEST,M3.5.0/2,M10.5.0/3";
+  if (tz.equalsIgnoreCase("UTC") || tz.equalsIgnoreCase("Etc/UTC")) return "UTC0";
+
+  // Si l'utilisateur fournit déjà une chaîne POSIX (contient "CEST" "CET" etc.), on ne change pas
+  if (tz.indexOf("CEST") >= 0 || tz.indexOf("CET") >= 0 || tz.indexOf("UTC") >= 0) return tz;
+
+  // Par défaut, retourne tel quel (au cas où l’ESP saurait l’interpréter)
+  return tz;
+}
+
+static void applyTimeConfig(const String& ianaOrPosixTz, const String& ntp) {
+  String tzPosix = ianaToPosix(ianaOrPosixTz);
+  configTzTime(tzPosix.c_str(), ntp.c_str());  // applique tz+NTP au système
+  Serial.printf("[Time] TZ='%s' (POSIX='%s') NTP='%s'\n",
+                ianaOrPosixTz.c_str(), tzPosix.c_str(), ntp.c_str());
+}
+
+static void loadNtpTzFromNvs() {
+  prefsCfg.begin("appcfg", /*ro=*/true);
+  String ntp = prefsCfg.getString("ntp_server", g_ntp_server);
+  String tz  = prefsCfg.getString("timezone",   g_timezone);
+  prefsCfg.end();
+  g_ntp_server = ntp;
+  g_timezone   = tz;
+}
+
+static void saveNtpTzToNvs() {
+  prefsCfg.begin("appcfg", /*rw=*/false);
+  prefsCfg.putString("ntp_server", g_ntp_server);
+  prefsCfg.putString("timezone",   g_timezone);
+  prefsCfg.end();
+}
+
+
 void handleStatusJson() {
   AppConfig cfg;
   readAppConfig(cfg); // ssid_wifi, pass_wifi, ip_wifi, id_station, adresse_api, token, activation_envoi_api
@@ -524,9 +767,137 @@ void handleStatusJson() {
   jn["ip_wifi"]       = cfg.ip_wifi;   // "dhcp" ou "X.Y.Z.W"
   jn["id_station"]    = cfg.id_station;
 
+  // 6) KPI interface réseau
+  JsonObject ui = j.createNestedObject("ui");
+// Vent moyen 10 min (calculé en RAM via le buffer g_windBuf)
+  ui["wind_avg10"] = windAvg10min();   // float
+  // Pluie (snapshots RAM)
+  ui["rain_hour"]  = rainHourMm();
+  ui["rain_day"]   = rainDayMm();
+  ui["rain_week"]  = rainWeekMm();
+  // Direction (live + cardinal si tu veux mapper)
+  ui["dir_deg"]    = degret;           // int (0..359)
+  ui["dir_card"]   = "—";              // tu peux brancher degToCardinal(degret) si tu l’as
+  
+  // Wi‑Fi
+  int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
+  int pct  = rssiToPercent(rssi);
+  int bars = pctToBars(pct);
+  ui["wifi_rssi"]   = rssi;
+  ui["wifi_percent"] = pct;
+  ui["wifi_bars"]    = bars;
+
+
   String out; serializeJson(j, out);
   server.send(200, "application/json", out);
 }
+
+
+static float readP(const char* key, float def = NAN) {
+  return prefs.getFloat(key, def);
+}
+static void writeP(const char* key, float v) {
+  prefs.putFloat(key, v);
+}
+
+
+void resetDailyStatsAtMidnightIfNeeded(const DateTime& now) {
+  // Tu utilises déjà lastDaySeen pour la pluie -> on s'appuie dessus
+  if (lastDaySeen != now.day()) {
+    lastDaySeen = now.day();
+
+    ST_tempExt.resetDaily();
+    ST_humExt.resetDaily();
+    ST_press.resetDaily();
+    ST_batt.resetDaily();
+    ST_solar.resetDaily();
+
+    GUST_maxDay = 0.0f;
+    GUST_dirDay = -1;
+
+    Serial.println("[Daily] Reset des min/max du jour à minuit.");
+  }
+}
+
+
+
+// --- Charger les records “all-time” au boot ---
+void loadAllTimeRecords() {
+  // Température (BMP/DHT, selon ce que tu alimentes)
+  ST_tempExt.minAll = readP("t_min_all");   // NAN si jamais écrit
+  ST_tempExt.maxAll = readP("t_max_all");
+
+  // Humidité
+  ST_humExt.minAll  = readP("h_min_all");
+  ST_humExt.maxAll  = readP("h_max_all");
+
+  // Pression
+  ST_press.minAll   = readP("p_min_all");
+  ST_press.maxAll   = readP("p_max_all");
+
+  // Batterie / Solaire
+  ST_batt.minAll    = readP("vb_min_all");
+  ST_batt.maxAll    = readP("vb_max_all");
+  ST_solar.minAll   = readP("vs_min_all");
+  ST_solar.maxAll   = readP("vs_max_all");
+
+  // Rafale + direction associée (stockée en float pour simplifier)
+  GUST_maxAll       = readP("gust_max_all", 0.0f);
+  float gustDirAllF = readP("gust_dir_all", NAN);
+  GUST_dirAll       = isnan(gustDirAllF) ? -1 : (int)gustDirAllF;
+
+  Serial.println("[Records] All-time chargés depuis NVS.");
+}
+
+// --- Sauvegarde anti-usure si des records ont vraiment changé ---
+void saveAllTimeRecordsIfDirty() {
+  const unsigned long SAVE_PERIOD_MS = 60000;  // pas plus d'1 écriture/min
+  unsigned long nowMs = millis();
+  if (!g_recordsDirty) return;
+  if (nowMs - g_lastSaveMs < SAVE_PERIOD_MS) return;
+
+  // Température
+  writeP("t_min_all", ST_tempExt.minAll);
+  writeP("t_max_all", ST_tempExt.maxAll);
+
+  // Humidité
+  writeP("h_min_all", ST_humExt.minAll);
+  writeP("h_max_all", ST_humExt.maxAll);
+
+  // Pression
+  writeP("p_min_all", ST_press.minAll);
+  writeP("p_max_all", ST_press.maxAll);
+
+  // Batterie / solaire
+  writeP("vb_min_all", ST_batt.minAll);
+  writeP("vb_max_all", ST_batt.maxAll);
+  writeP("vs_min_all", ST_solar.minAll);
+  writeP("vs_max_all", ST_solar.maxAll);
+
+  // Rafale
+  writeP("gust_max_all", GUST_maxAll);
+  writeP("gust_dir_all", (float)GUST_dirAll); // direction stockée en float
+
+  g_lastSaveMs = nowMs;
+  g_recordsDirty = false;
+  Serial.println("[Records] All-time sauvegardés en NVS.");
+}
+
+
+
+// --- Nouvelle fonction utilitaire ---
+// Met à jour la stat et marque 'dirty' si min/max ALL-TIME ont changé
+inline void updateStat(StatScalar& s, float v, time_t now) {
+  float prevMinAll = s.minAll;
+  float prevMaxAll = s.maxAll;
+  s.update(v, now);
+  if ((prevMinAll != s.minAll) || (prevMaxAll != s.maxAll)) {
+    g_recordsDirty = true;
+  }
+}
+
+
+
 
 
 
@@ -547,6 +918,21 @@ void setup() {
   }
 
   
+  // --- NVS Records ---
+  prefs.begin("records", false);   // namespace "records"
+  loadAllTimeRecords();            // charge min/max absolus depuis NVS
+
+  // On initialise les stats courantes avec NAN
+  ST_tempExt.cur = NAN;  ST_humExt.cur = NAN;  ST_press.cur = NAN;
+  ST_batt.cur    = NAN;  ST_solar.cur = NAN;
+
+  // Optionnel: afficher ce qui a été chargé
+  Serial.printf("[Records] t(min=%.1f,max=%.1f) h(min=%.0f,max=%.0f) p(min=%.1f,max=%.1f)\n",
+                ST_tempExt.minAll, ST_tempExt.maxAll, ST_humExt.minAll, ST_humExt.maxAll,
+                ST_press.minAll, ST_press.maxAll);
+  Serial.printf("[Records] gust(max=%.1f) dir=%d\n", GUST_maxAll, GUST_dirAll);
+
+  
   if (!db_begin()) {
     Serial.println("❌ DB init KO");
   } else {
@@ -563,7 +949,11 @@ void setup() {
   }
   */
   Wire.begin();
-  configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org");
+  
+  // --- Time/NTP au boot ---
+  loadNtpTzFromNvs();                   // récupère ce qui a été enregistré précédemment
+  applyTimeConfig(g_timezone, g_ntp_server);  // applique au système (TZ + serveur NTP)
+
   if (!rtc.begin()) {
     Serial.println("RTC non détecté !");
     //while (1);
@@ -642,7 +1032,7 @@ server.on("/etatcapteurs", HTTP_GET, handleEtatCapteurs);
 server.on("/status.json", HTTP_GET, handleStatusJson);
 
 server.on("/config", HTTP_GET, [](){
-  File file = SPIFFS.open("/config_working.html", "r");
+  File file = SPIFFS.open("/config.html", "r");
   if (file) { server.streamFile(file, "text/html"); file.close(); }
   else { server.send(404, "text/plain", "Page config introuvable"); }
 });
@@ -810,6 +1200,31 @@ server.on("/style", HTTP_GET, []() {
   f.close();
 });
 
+server.on("/script", HTTP_GET, []() {
+  const char* path = "/script.js";
+  if (!SPIFFS.exists(path)) {
+    server.send(404, "text/plain", "script.js introuvable");
+    return;
+  }
+  File f = SPIFFS.open(path, "r");
+  server.sendHeader("Cache-Control", "public, max-age=604800, immutable");
+  server.streamFile(f, "text/javascript");
+  f.close();
+});
+
+//javascript configjs
+server.on("/configjs", HTTP_GET, []() {
+  const char* path = "/configjs.js";
+  if (!SPIFFS.exists(path)) {
+    server.send(404, "text/plain", "configjs.js introuvable");
+    return;
+  }
+  File f = SPIFFS.open(path, "r");
+  server.sendHeader("Cache-Control", "public, max-age=604800, immutable");
+  server.streamFile(f, "text/javascript");
+  f.close();
+});
+
 // /infos
 server.on("/infos", HTTP_GET,  [] (){
   File file = SPIFFS.open("/infos.html", "r");
@@ -856,16 +1271,24 @@ server.on("/config.json", HTTP_GET, []() {
   doc["adresse_api"]= c.adresse_api;
   doc["token"]      = c.token;
   doc["activation_envoi_api"] = c.activation_envoi_api;
+
+  
+  // NEW: exposer aussi NTP/TZ depuis RAM (chargés NVS)
+  doc["ntp_server"] = g_ntp_server;
+  doc["timezone"]   = g_timezone;
+
   String out; serializeJson(doc, out);
   server.send(200, "application/json", out);
 });
 
 // POST /config.save
 server.on("/config.save", HTTP_POST, []()  {
-    AppConfig cur;
-    readAppConfig(cur); // récupère l'ancien mdp si vide
+      
+  AppConfig cur; readAppConfig(cur);
+  AppConfig n = cur;
 
-    AppConfig n = cur;
+
+    
     if (server.hasArg("ssid_wifi"))    n.ssid_wifi    = server.arg("ssid_wifi");
     if (server.hasArg("pass_wifi"))  { String p = server.arg("pass_wifi"); if (p != "") n.pass_wifi = p; }
     if (server.hasArg("IP_WIFI"))      n.ip_wifi      = server.arg("IP_WIFI");
@@ -875,6 +1298,15 @@ server.on("/config.save", HTTP_POST, []()  {
     if (server.hasArg("activation_envoi_api"))
                                        n.activation_envoi_api = server.arg("activation_envoi_api").toInt();
 
+    
+    // --- NTP/TZ: nouveaux champs optionnels ---
+    if (server.hasArg("ntp_server")) {
+      g_ntp_server = server.arg("ntp_server");
+    }
+    if (server.hasArg("timezone")) {
+      g_timezone = server.arg("timezone");
+    }
+
     if (!updateAppConfig(n)) {
         server.send(500, "application/json", "{\"ok\":false,\"error\":\"db update failed\"}");
         return;
@@ -882,6 +1314,12 @@ server.on("/config.save", HTTP_POST, []()  {
 
     // Rafraîchit les variables runtime
     apiRefreshConfigFromDb();
+
+    
+    // Applique TZ/NTP tout de suite + persiste en NVS
+    applyTimeConfig(g_timezone, g_ntp_server);
+    saveNtpTzToNvs();
+
 
     // Reconnexion Wi‑Fi si SSID/MdP ont changé
     if (n.ssid_wifi != cur.ssid_wifi || n.pass_wifi != cur.pass_wifi) {
@@ -948,6 +1386,22 @@ server.on("/adc.html", HTTP_GET, []() {
   server.sendHeader("Cache-Control", "no-store"); // éviter cache pendant tests
   server.streamFile(f, "text/html");
   f.close();
+});
+
+
+// dans setupLocalStationApiHandler(WebServer &server)
+server.on("/api/push/status", HTTP_GET, [] (){
+  StaticJsonDocument<512> j;
+  j["row_code"] = g_lastPushRow.code;
+  j["row_body"] = g_lastPushRow.body;
+  j["row_age_ms"] = (unsigned long)(millis() - g_lastPushRow.ts_ms);
+  j["row_endpoint"] = g_lastPushRow.endpoint;
+  j["etat_code"] = g_lastPushEtat.code;
+  j["etat_body"] = g_lastPushEtat.body;
+  j["etat_age_ms"] = (unsigned long)(millis() - g_lastPushEtat.ts_ms);
+  j["etat_endpoint"] = g_lastPushEtat.endpoint;
+  String out; serializeJson(j, out);
+  server.send(200, "application/json", out);
 });
 
 
@@ -1097,7 +1551,15 @@ void loop() {
     }
 
 
+    DateTime now = rtc.now();
+        sprintf(datetime, "%04d-%02d-%02d %02d:%02d:%02d",
+          now.year(), now.month(), now.day(),
+          now.hour(), now.minute(), now.second());
+
     
+    // Reset journalier à minuit (s'appuie sur lastDaySeen)
+    resetDailyStatsAtMidnightIfNeeded(now);
+
 
     if (millis() - tDbHealth >= 5000) {       // toutes les 5 s
       if (!otaInProgress) {
@@ -1106,6 +1568,46 @@ void loop() {
         Serial.println("OTA in progress — skipping db_reopen_if_needed");
       }
       tDbHealth = millis();
+    }
+
+    
+    // ----- 1) Historique vent pour moyenne 10 min -----
+    if (millis() - t_lastWindPush >= 1000) { // on pousse 1 échantillon par seconde
+      t_lastWindPush = millis();
+      g_windBuf[g_windIdx] = vitesse; // vitesse instantanée km/h
+      g_windIdx = (g_windIdx + 1) % WIND_BUF_SECS;
+      if (g_windIdx == 0) g_windFilled = true;
+    }
+
+    // ----- 2) Snapshots pluie -----
+    g_rainCum_now = quantite; // cumul courant en mm
+
+    // Marque horaire pour "il y a 1 heure" (simple: toutes les 3600 s, on recale)
+    if (millis() - t_lastHourMark >= 3600000UL) { // 1 h
+      t_lastHourMark = millis();
+      g_rainCum_t0h = g_rainCum_now;  // cliché du cumul à t-1h
+    }
+
+    // Détection de minuit local (via RTC)
+   
+    if (lastDaySeen != now.day()) {
+      // On détecte un changement de jour -> on vient de passer minuit
+      lastDaySeen = now.day();
+      g_rainCum_midnight = g_rainCum_now; // cliché à 00:00
+    }
+
+    // Semaine glissante (simplifiée : recale toutes 24h pour t-7j)
+    static uint8_t lastWeekRebaseDay = 255;
+    if (lastWeekRebaseDay != now.day()) {
+      lastWeekRebaseDay = now.day();
+      // Approche simple : si tu veux être exact au jour près, tu peux conserver un tableau de 7 clichés quotidiens.
+      // Ici on recale g_rainCum_t0w une fois par jour : après 7 jours, ça donne la semaine glissante approchée.
+      // (Pour exact + glissant à la minute, on stockerait 7*24 clichés horaires.)
+      static uint8_t daysSinceWeekBase = 0;
+      daysSinceWeekBase = (daysSinceWeekBase + 1) % 7;
+      if (daysSinceWeekBase == 0) {
+        g_rainCum_t0w = g_rainCum_now; // rebase toutes les 7 * 24 h
+      }
     }
 
     
@@ -1177,10 +1679,8 @@ void loop() {
       quantite = 0.0;
     }
      
-    DateTime now = rtc.now();
-    sprintf(datetime, "%04d-%02d-%02d %02d:%02d:%02d",
-          now.year(), now.month(), now.day(),
-          now.hour(), now.minute(), now.second());
+    
+
 
     Serial.print("DateTime = ");
     Serial.println(datetime);
@@ -1349,32 +1849,43 @@ void loop() {
     } else {
  
     
+      float temp1_r   = round2f(temp1);
+      float pression_r     = round2f(pression);
+      float temp2_r    = round2f(temp2);
+      float humiditer_r    = round2f(humiditer);
+      float point_de_rosee_r = round2f(point_de_rosee);
+      float vitesse_r      = round2f(vitesse);
+      float rafale_r       = round2f(rafale);
+
         //Mise à jour de la base de données
         if (updateStationDirect(
             1,                // id de la ligne à mettre à jour
-            temp2,            // tempdht22 (température DHT22)
-            humiditer,        // humiditer
-            temp1,            // tempbmp280 (température BMP280)
-            pression,         // pression
+            temp2_r,            // tempdht22 (température DHT22)
+            humiditer_r,        // humiditer
+            temp1_r,            // tempbmp280 (température BMP280)
+            pression_r,         // pression
             tension_solaire,  // lumiere (ou la variable correspondant à la luminosité)
-            vitesse,          // anemometre
+            vitesse_r,          // anemometre
             degret,           // girouette (ou la variable correspondant à la direction)
             quantite,         // pluviometre
-            point_de_rosee,   // pointderosee (à calculer si besoin)
+            point_de_rosee_r,   // pointderosee (à calculer si besoin)
             0.0,              // ghost (à définir selon ton usage)
             currentTime,               // tpsvie (à définir selon ton usage)
             datetime,
-            rafale           // rafale (nouvelle variable pour la rafale)
+            rafale_r           // rafale (nouvelle variable pour la rafale)
         )) {
           Serial.println("Mise à jour réussie !");
         } else {
           Serial.println("Erreur lors de la mise à jour !");
         }
 
+        // Mise à jour des tensions
+        float tension_batterie_r = round2f(tension_batterie);
+        float tension_solaire_r = round2f(tension_solaire);
         if (updateTensions(
         1,                // id de la ligne à mettre à jour
-        tension_batterie, // tension_batterie mesurée
-        tension_solaire   // tension_solaire mesurée
+        tension_batterie_r, // tension_batterie mesurée
+        tension_solaire_r   // tension_solaire mesurée
         )) 
         {
             Serial.println("Tensions mises à jour !");
@@ -1414,6 +1925,41 @@ void loop() {
             Serial.println("Envoi des données à l'API désactivé.");
         }
       }
+
+        // ... à l'intérieur du bloc 30 s (après avoir mis à jour temp1, pression, temp2, humiditer, tension_batterie, tension_solaire, vitesse, rafale...)
+        time_t nowEpoch = now.unixtime();
+
+        // Mettre à jour les séries scalaires
+     
+        updateStat(ST_tempExt,    temp1,            nowEpoch);          // ou temp2 si tu préfères DHT22
+        updateStat(ST_humExt,     (float)humiditer, nowEpoch);
+        updateStat(ST_press,      pression,         nowEpoch);
+        updateStat(ST_batt,       tension_batterie, nowEpoch);
+        updateStat(ST_solar,      tension_solaire,  nowEpoch);
+
+        // Rafales (records + direction au moment du pic)
+        if (!isnan(rafale)) {
+          if (rafale > GUST_maxDay) { GUST_maxDay = rafale; GUST_dirDay = degret; }
+          if (rafale > GUST_maxAll) {
+            float prevG = GUST_maxAll;
+            GUST_maxAll = rafale;
+            GUST_dirAll = degret;
+            if (GUST_maxAll != prevG) g_recordsDirty = true;
+          }
+        }
+
+        // Records scalaires: si un "all-time" change, flag Dirty
+        auto checkDirty = [](const StatScalar& s, const char* name){
+          static float lastMinAll_t = NAN, lastMaxAll_t = NAN;
+          if (name == nullptr) return;
+          // la closure ne stocke qu'un jeu; si tu veux plus fin, dupliques pour chaque série
+        };
+        if (!isnan(ST_tempExt.minAll) || !isnan(ST_tempExt.maxAll)) g_recordsDirty = true;
+        if (!isnan(ST_humExt.minAll)  || !isnan(ST_humExt.maxAll))  g_recordsDirty = true;
+        if (!isnan(ST_press.minAll)   || !isnan(ST_press.maxAll))   g_recordsDirty = true;
+        if (!isnan(ST_batt.minAll)    || !isnan(ST_batt.maxAll))    g_recordsDirty = true;
+        if (!isnan(ST_solar.minAll)   || !isnan(ST_solar.maxAll))   g_recordsDirty = true;
+        saveAllTimeRecordsIfDirty();
       }
  
 

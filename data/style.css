@@ -1,247 +1,439 @@
-@media (max-width: 768px)
-{
-	.carousel
-	{
-		display: none;
-	}
+/*Style CSS pour l'interface web de la station météo*/
 
-	.logo_site
-	{
-		display: none;
-	}
-
-	.nav_dek
-	{
-		display: none;
-	}
-	#canvas_status
-	{
-		display: none;
-		visibility: hidden;
-	}
-    .anim_lumier
-    {
-        visibility: hidden;
-        display: none;
-    }
-	.arduino
-	{
-		width: 150px;
-		height: 150px;
-	}
-    .arduino
-    {
-        width: 100px;
-        height: 100px;
-    }
-    header
-    {
-        width: 100%;
+:root {
+      --bg: #0f172a;          /* fond */
+      --panel: #132037;       /* un poil plus clair qu'avant (était #111827) */
+      --panel-2: #0e1930;     /* idem (était #0b1220) */
+      --text: #fafafa;        /* texte principal */
+      --muted: #dfe7f2;       /* labels plus clairs (était #d5dce7) */
+      --accent: #22d3ee;
+      --ok: #10b981;
+      --ko: #ef4444;
+      --card-border: #2a3a55; /* bordure un peu plus claire (était #1f2937) */
     }
 
+		
+		.text-muted {
+		color: #ffffff !important;
+		opacity: 0.8 !important;
+		}
 
-}
-@media (min-width: 768px)
-{
-	.logo_site_mobile
-	{
-		display: none;
+		
+	.titre-station {
+	color: #ffffff;        /* Blanc pur */
+	font-weight: 700;
+	text-shadow: 1px 1px 4px rgba(0,0,0,0.5); /* Améliore la lisibilité */
 	}
 
-	.nav_mobile
-	{
-		display: none;
-		visibility:hidden;
+	.sous-titre {
+	color: #eaeaea;        /* Blanc légèrement atténué */
+	text-shadow: 1px 1px 3px rgba(0,0,0,0.4);
 	}
 
-}
+	/* Si ton thème force une couleur sombre, protège le texte : */
+	.container.text-center * {
+	color: #ffffff !important;
+	}
 
-htlm
-{
-    width: auto;
-}
+      /* Grille de cards homogènes */
+      .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;align-items:stretch;margin-top:12px;}
 
-.carousel
-{
-	margin-bottom: 20px;
-}
+      /* Carte générique */
+      .card{
+        
+        background: linear-gradient(180deg, var(--panel), var(--panel-2));
+        border: 1px solid var(--card-border);
+        border-radius: 12px;
+        padding: 16px;
+        display:flex;flex-direction:column;
+        min-height: 200px; /* hauteur homogène */
+      }
 
-.donnee_meteo
-{
-	margin-top: 10px;
-}
+      
+      .card-small {
+        min-height: 50px; /* hauteur spécifique */
+      }
 
-.articles_home
-{
-	margin-top: 10px;
-}
+      .title{font-weight:600;letter-spacing:.04em;text-align:center;opacity:.9;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(240, 235, 235, 0.952)}
+      .value-xl{font-size:clamp(2.2rem,5vw,3.4rem);font-weight:800;line-height:1.1;text-align:center;margin-top:6px;margin-bottom:0;color:#f2f6ff}
+      .unit{text-align:center;opacity:.85;margin-bottom:10px}
+      .sub{text-align:center;opacity:.78;margin-top:auto}
+      .muted{opacity:.7}
+      
+      /* APRÈS : nouvelle classe, que tu utiliseras où tu veux du grid à 2 colonnes */
+      .two-col-grid{
+        display:grid;
+        grid-template-columns:1fr 1fr;
+        gap:14px;
+        margin-top:20px;
+      }
 
-.contact_home
-{
-	margin-top: 10px;
-}
+      
+      /* Rendre les cards internes lisibles */
+      .card .card-header h2,
+      .card .card-header h3,
+      .card .card-header h6,
+      .card .card-header {
+        color: #ffffff !important;
+      }
 
-.gauges_index
-{
-	margin-top: 10px;
-}
+      /* Contenu interne des cards */
+      .card .value,
+      .card .kv div,
+      .card strong,
+      .card small,
+      .card p,
+      .card div,
+      .card span {
+        color: #ffffff !important;
+        opacity: 1 !important;
+      }
 
-ul 
-{
-	list-style-type: none;
-	display: inline-block;
-	margin: 0px;
-}
+      /* Titres de carte : un peu plus lisibles */
+      .card h2 { 
+        font-size: 1.05rem; 
+        margin: 0 0 10px 0; 
+        color: var(--text);
+        opacity: 0.95; /* léger voile, mais pas trop */
+      }
 
-.bouton_add_sauv
-{
-	padding-top: 10px;
-}
+      /* Anti débordement */
+    .sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      
+    /* Grosse valeur : reste forte + léger halo pour le piqué visuel */
+      .value-xl{
+        font-size: clamp(2.2rem, 5vw, 3.4rem);
+        font-weight: 800;
+        line-height: 1.1;
+        text-align: center;
+        margin: 6px 0 0 0;
+        color: #ffffff;             /* encore plus clair que var(--text) */
+        text-shadow: 0 1px 2px rgba(0,0,0,0.35); /* discret, améliore la lisibilité */
+      }
 
-.titre
-{
-	margin-top: 10px;
-	margin-bottom: 10px;
-	padding-bottom: 10px;
-}
+  
+      /* Valeurs “normales” centrées et plus claires */
+      .value {
+        color: var(--text);
+        font-variant-numeric: tabular-nums;
+        text-align: center;
+      }
 
-.bd-placeholder-img
-{
-	font-size: 1.125rem;
-	text-anchor: middle;
-	-webkit-user-select: none;
-	-moz-user-select: none;
-	-ms-user-select: none;
-	user-select: none;
-}
-
-.form-signin
-{
-	width: 100%;
-	max-width: 330px;
-	padding: 15px;
-	margin: auto;
-}
-
-.form-signin .checkbox {
-	font-weight: 400;
-}
-.form-signin .form-control {
-	position: relative;
-	box-sizing: border-box;
-	height: auto;
-	padding: 10px;
-	font-size: 16px;
-}
-.form-signin .form-control:focus {
-	z-index: 2;
-}
-.form-signin input[type="email"] {
-	margin-bottom: -1px;
-	border-bottom-right-radius: 0;
-	border-bottom-left-radius: 0;
-}
-.form-signin input[type="password"] {
-	margin-bottom: 10px;
-	border-top-left-radius: 0;
-	border-top-right-radius: 0;
-}
-
-label
-{
-	font-size: 2.5rem;
-}
-
-.card-subtitle
-{
-	padding-top: 20px;
-}
-
-.card
-{
-	margin: 0 auto; /* Added */
-	float: none; /* Added */
-	margin-bottom: 10px; /* Added */
-}
-
-.envoi_contact
-{
-	padding-top: 15px;
-}
-
-.card_admin
-{
-	margin-top: 10px;
-}
-
-.recherche
-{
-	padding-top: 10px;
-}
-
-.center_div{
-	margin: 0 auto;
-	width:80% /* value of your choice which suits your alignment */
-}
-body
-{
-	margin:0 auto;
-	width: 100%;
-	overflow-x: hidden;
-	padding-top: 100px;
-}
-
-header
-{
-    margin:0 auto;
-    overflow-x: hidden;
-    width: 100%;
-}
+      /* Unités : plus de transparence = meilleure lisibilité */
+      .unit {
+        text-align: center;
+        opacity: 1;                /* AVANT: .85 */
+        color: #f0f4ff;            /* plus clair que var(--text) */
+        margin-bottom: 10px;
+      }
 
 
-.presentation
-{
-	margin-top: 10px;
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Noto Sans', 'Helvetica Neue', Arial, 'Apple Color Emoji', 'Segoe UI Emoji'; background: linear-gradient(180deg, var(--bg), #030712 60%); color: var(--text); }
+
+    header { position: sticky; top:0; z-index: 20; background: rgba(8, 13, 23, 0.7); backdrop-filter: blur(8px); border-bottom: 1px solid var(--card-border); }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 0 16px; }
+    .topbar { display:flex; align-items:center; gap:16px; padding: 12px 0; }
+    .logo { display:flex; align-items:center; gap:10px; text-decoration:none; color: var(--text); }
+    .logo img { height: 36px; width:auto; }
+    .site-title { font-weight: 600; letter-spacing: 0.2px; }
+    nav { margin-left:auto; display:flex; gap:12px; }
+    nav a { color: var(--text); text-decoration:none; padding:8px 12px; border-radius:8px; }
+    nav a:hover { background: #0b1220; }
+
+    main.wrap { padding: 24px 16px; }
+    h1 { font-size: 1.35rem; margin: 0 0 4px 0; }
+    .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 20px; }
+
+    .grid { display:grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+    .card { background: linear-gradient(180deg, var(--panel), var(--panel-2)); border:1px solid var(--card-border); border-radius: 12px; padding: 16px; }
+    .card h2 { font-size: 1.05rem; margin-top:0; margin-bottom: 10px; }
+
+    /* Les labels de la grille key/value (RSSI, Qualité…) plus lisibles */
+    .kv { 
+      display: grid; 
+      grid-template-columns: 1fr auto; 
+      gap: 8px 12px; 
+      font-size: 0.95rem; 
+    }
+    .kv div:nth-child(odd) { 
+      color: var(--muted);       /* plus clair via la variable ci-dessus */
+      opacity: 0.95;
+    }
+
+    
+
+    
+    /* Footer et éléments secondaires : reste lisible */
+    footer { 
+      color: var(--muted); 
+      text-align:center; 
+      padding: 18px 0 28px; 
+    }
+
+    .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.8rem; background:#0b1220; border:1px solid var(--card-border); }
+    .wifi-signal { display:inline-flex; align-items:flex-end; gap:4px; }
+    .wifi-signal .bar { width:8px; background:#e6e6e6; border-radius:2px; }
+    .wifi-signal .bar.on { background:#2b8a3e; }
+    .wifi-signal .bar.h1 { height:8px; }
+    .wifi-signal .bar.h2 { height:12px; }
+    .wifi-signal .bar.h3 { height:16px; }
+    .wifi-signal .bar.h4 { height:20px; }
+    .push-body { max-height: 4.5rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display:block; }
+
+    
+    /* Barre compacte */
+    .progress.slim {
+      height: 10px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid var(--card-border);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .progress.slim .progress-bar {
+      background: linear-gradient(90deg, #36c275, #10b981);
+      color: #0b1220;         /* texte du % lisible */
+      font-size: 0.75rem;
+      line-height: 10px;
+      text-align: center;
+    }
+
+    
+      /* Effet pro dans les cards internes */
+      .card.shadow-sm {
+        background: rgba(255,255,255,0.05);
+        backdrop-filter: blur(4px);
+      }
+
+      /* Status badges */
+      .badge-status-ok { background:#10b981; }
+      .badge-status-warn { background:#facc15; color:black; }
+      .badge-status-ko { background:#ef4444; }
+
+      /* WiFi bars align */
+      #wifiSignal {
+        display:flex;
+        gap:4px;
+      }
+      
+    .card-wifi {
+        display: flex;
+        flex-direction: column;     /* contenu vertical */
+        justify-content: center;    /* centre vertical */
+        align-items: center;        /* centre horizontal */
+        text-align: center;         /* centre le texte */
+        height: 100%;               /* optionnel si ta card a une hauteur fixe */
+        padding: 1rem;
+    }
+
+    .card-connectivity {
+        display: flex;
+        flex-direction: column;     /* contenu vertical */
+        justify-content: center;    /* centre vertical */
+        align-items: center;        /* centre horizontal */
+        text-align: center;         /* centre le texte */
+    }
+
+    
+      /* ========== Instruments (Variante B, compatibles avec ta mise en page) ========== */
+      .card .sep{
+        height:1px; background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent);
+        margin:10px 0 14px;
+      }
+
+      .kpi{
+        display:flex; align-items:center; justify-content:center; gap:.75rem;
+      }
+      .kpi .val{ font-size:3rem; line-height:1; font-weight:800; letter-spacing:.02em; }
+      .kpi .unit{ font-size:1rem; color:#9fb0c7; align-self:flex-end; margin-bottom:.3rem }
+
+      .sub{ text-align:center; color:#9fb0c7; margin-top:8px; font-size:.95rem; }
+
+      .badge{
+        display:inline-flex; align-items:center; gap:.4rem;
+        padding:.2rem .5rem; border-radius:.5rem; font-size:.8rem; font-weight:600;
+        border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.04); color:#9fb0c7;
+      }
+      .badge.ok{ color:#1fbe72; border-color:rgba(31,190,114,.35); background:rgba(31,190,114,.12)}
+      .badge.warn{ color:#f0b429; border-color:rgba(240,180,41,.35); background:rgba(240,180,41,.12)}
+      .badge.bad{ color:#e0595b; border-color:rgba(224,89,91,.35); background:rgba(224,89,91,.12)}
+
+      /* — Jauge demi-cercle (anémomètre) — */
+      .gauge-wrap{ display:flex; gap:18px; align-items:center; justify-content:center; }
+      #gaugeWind{ max-width:240px; height:auto }
+
+      /* — Boussole (girouette) — */
+      .compass{ width:140px; height:140px; margin:4px auto 0; position:relative; }
+      .compass .disc{
+        width:100%; height:100%; border-radius:50%;
+        border:1px solid rgba(255,255,255,.08);
+        background:radial-gradient(circle at 50% 50%, rgba(255,255,255,.05), transparent 55%);
+        position:relative;
+      }
+      .compass .tick{
+        position:absolute; left:50%; top:50%; width:1px; height:46%;
+        background:#2a3a5b; transform-origin:bottom center;
+      }
+      .compass .needle{
+        position:absolute; left:50%; top:50%; width:2px; height:40%;
+        background:linear-gradient(180deg,#ff6b6b,#e85050);
+        transform-origin:bottom center; border-radius:2px;
+      }
+      .compass .center{
+        position:absolute; left:50%; top:50%; width:10px; height:10px; border-radius:50%;
+        transform:translate(-50%,-50%); background:#e7ecf4;
+      }
+      .dir{ text-align:center; margin-top:8px; }
+      .dir .deg{ font-weight:700; }
+
+    @media (max-width: 820px) {
+      .grid { grid-template-columns: 1fr; }
+      nav { gap:6px; }
+      nav a { padding:6px 8px; }
+	}
+
+	/*mise en page config*/
+	
+/* ====== Tableaux configurables (sobres & lisibles sur fond sombre) ====== */
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;        /* responsive si beaucoup de colonnes */
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border: 1px solid var(--card-border);
+  border-radius: 10px;     /* pour un léger arrondi */
+  overflow: hidden;        /* pour afficher l’arrondi */
+}
+.table th, .table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  color: var(--text);
+}
+.table th {
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--text);
+  background: rgba(255,255,255,0.04);
+}
+.table-striped tbody tr:nth-child(odd) {
+  background: rgba(255,255,255,0.03);
+}
+.table-compact th, .table-compact td {
+  padding: 8px 10px;
+}
+.table td.text-muted {
+  color: var(--muted) !important;
+  opacity: .95 !important;
+}
+/* Badges état (déjà présents, on s’assure du rendu dans un tableau) */
+.table .badge {
+  display: inline-block;
+  padding: .2rem .5rem;
+  border-radius: .5rem;
+  font-size: .8rem;
+  font-weight: 600;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.04);
+  color: #9fb0c7;
+}
+.table .badge.ok {
+  color: #1fbe72;
+  border-color: rgba(31,190,114,.35);
+  background: rgba(31,190,114,.12);
+}
+.table .badge.bad {
+  color: #e0595b;
+  border-color: rgba(224,89,91,.35);
+  background: rgba(224,89,91,.12);
 }
 
-.index
-{
-	margin-top: 10px;
+
+/* ====== Amélioration contraste & boutons (config) ====== */
+
+/* Sous-titres et titres un peu plus lumineux */
+.subtitle { color: #f0f4ff; opacity: 1; }
+.title { color: #ffffff; opacity: 1; }
+
+/* Libellés (colonne gauche de .kv) : plus clairs et lisibles */
+.kv div:nth-child(odd) {
+  color: #f0f4ff;      /* avant: var(--muted) */
+  opacity: 1;          /* retire l'assombrissement */
+  font-weight: 600;    /* renforce la hiérarchie visuelle */
 }
 
-.anim_lumier
-{
-	width: 750px;
-	height: 250px;
-	border: 1px solid black;
-	box-shadow: 6px 6px 3px black;
-	border-radius: 10px;
-	margin-bottom: 20px;
+/* Valeurs à droite : garde un blanc bien net */
+.kv div:nth-child(even) {
+  color: #ffffff;
+  opacity: 1;
 }
 
-.card_articles
-{
-	height: 700px;
+/* Inputs harmonisés avec le thème (lisibles) */
+input[type="text"],
+input[type="password"],
+input[type="url"],
+select,
+textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: #0f1a2b;           /* fond sombre mais contrasté */
+  color: #ffffff;                 /* texte clair */
+  outline: none;
+}
+input::placeholder, textarea::placeholder {
+  color: #cfe1ff;                 /* placeholder plus visible */
+  opacity: 0.95;
 }
 
-.minimaxsearch
-{
-	margin-bottom: 10px;
-}
-
-.bg-orange {
-    background-color: #fd7e14 !important;
-}
-
-
-.toggle-btn {
-  padding: 6px 12px;
-  border: none;
-  border-radius: 4px;
+/* Boutons : styles cohérents avec ton thème */
+.btn {
+  display: inline-block;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: #1e90ff;            /* bleu visible */
+  color: #fff;
+  font-weight: 600;
+  text-align: center;
   cursor: pointer;
-  background-color: #ccc;
+  transition: transform .06s ease, filter .2s ease, background .2s ease;
 }
-.toggle-btn.active {
-  background-color: #4CAF50;
-  color: white;
+.btn:hover { filter: brightness(1.05); }
+.btn:active { transform: translateY(1px); }
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid #1e90ff;
+  color: #1e90ff;
 }
+.btn-outline:hover {
+  background: rgba(30, 144, 255, .12);
+}
+
+/* Disposition verticale : une action par ligne */
+.actions-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;  /* pleine largeur */
+  margin-top: 10px;
+}
+
+/* Bouton pleine largeur pour une lecture claire */
+.btn-block { width: 100%; }
+
+/* Tableau "État des capteurs" : décrassage global */
+.table th, .table td { color: #ffffff; }
+.table td.text-muted { color: #dfe7f2 !important; opacity: 1 !important; }
+
+/* Petites descriptions en bas de carte plus claires */
+.sub, .muted, .text-muted { color: #eaeefb !important; opacity: 1 !important; }
+
+/* Option: un poil plus de contraste visuel sur les cards */
+.card { box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
