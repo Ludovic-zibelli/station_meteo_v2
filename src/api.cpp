@@ -8,6 +8,7 @@
 #include "api.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include "log.h"
 
 
 // Config API dynamique
@@ -15,10 +16,12 @@ static AppConfig g_apiCfg;
 static unsigned long g_apiCfgLoadedMs = 0;
 static const unsigned long API_CFG_TTL_MS = 60 * 1000UL;
 
+extern int degret; // défini dans main.cpp, direction en degrés (0..359)
 
 // --- Timeouts HTTP (ms) ---
 static constexpr uint32_t HTTP_CONNECT_TIMEOUT_MS  = 8000;   // délai connexion TCP/TLS
 static constexpr uint32_t HTTP_OPERATION_TIMEOUT_MS = 12000; // délai lecture/écriture HTTP
+
 
 
 // === Variables "runtime" avec les mêmes noms qu'avant ===
@@ -48,9 +51,13 @@ void apiRefreshConfigFromDb() {
 
   // Ajoute ces logs :
   Serial.printf("[API] base='%s'\n", base.c_str());
+  app_logf("[API] base='%s'\n", base.c_str());
   Serial.printf("[API] stationdirect='%s'\n", API_URL.c_str());
+  app_logf("[API] stationdirect='%s'\n", API_URL.c_str());
   Serial.printf("[API] etatstation='%s'\n", API_URL_ETATSTATION.c_str());
+  app_logf("[API] etatstation='%s'\n", API_URL_ETATSTATION.c_str());
   Serial.printf("[API] station_meteos='%s'\n", API_URL_STATION_METEOS.c_str());
+  app_logf("[API] station_meteos='%s'\n", API_URL_STATION_METEOS.c_str());
 }
 
 
@@ -118,53 +125,59 @@ static String frenchDecimal(float v, uint8_t digits = 1) {
 }
 
 // Lis la dernière ligne de station_direct et l’envoie à l’API
+
+
 bool sendLatestRowToApi() {
-  if (API_URL.isEmpty()) {  // config pas encore chargée
+  if (API_URL.isEmpty()) {
     recordPushResult(g_lastPushRow, "cfg", -10, "No API config");
     return false;
   }
   if (WiFi.status() != WL_CONNECTED) {
-    recordPushResult(g_lastPushRow, API_URL.c_str(), -2, "No WiFi");  // <-- .c_str()
+    recordPushResult(g_lastPushRow, API_URL.c_str(), -2, "No WiFi");
     return false;
   }
 
-  String payload = buildStationJsonPayload();
-  WiFiClientSecure client; client.setInsecure();
+  // Construit le JSON au format Postman/serveur
+  String payload = buildStationJsonPayloadStrict();
+  Serial.printf("[API] stationdirect PUT len=%u\n", (unsigned)payload.length());
+  app_logf("[API] stationdirect PUT len=%u\n", (unsigned)payload.length());
+  Serial.println(payload.substring(0, 256));
+  app_logf("%s", payload.substring(0, 256).c_str());
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
   HTTPClient http;
-  if (!http.begin(client, API_URL)) {
+  if (!http.begin(client, API_URL)) {          // https://.../api/stationdirect/{id}
     recordPushResult(g_lastPushRow, API_URL.c_str(), -1, "http.begin() failed");
     return false;
   }
 
-  
-  // 2) timeouts AVANT la requête
-  http.setConnectTimeout(HTTP_CONNECT_TIMEOUT_MS);
-  http.setTimeout(HTTP_OPERATION_TIMEOUT_MS);
+  // IMPORTANT : rester en HTTP/1.1 (ne PAS appeler useHTTP10(true))
+  // http.useHTTP10(true); // ❌ à NE PAS utiliser ici
 
-  http.addHeader("Content-Type", "application/json");
+  http.setConnectTimeout(8000);
+  http.setTimeout(12000);
+  http.setReuse(false);                         // connexion non réutilisée (comme Postman)
+  http.addHeader("Content-Type", "application/json; charset=utf-8");
   http.addHeader("Accept", "application/json");
   if (API_KEY.length()) http.addHeader("X-API-KEY", API_KEY);
 
-
+  // Méthode attendue par ton API
   int code = http.PUT(payload);
   String resp = http.getString();
+  http.end();
 
-  if (code < 200 || code >= 300) {
-    // Retente en POST si l'API le préfère
-    http.end();
-    if (http.begin(client, API_URL)) { // ou API_URL_ETATSTATION selon la fonction
-      http.addHeader("Content-Type", "application/json");
-      http.addHeader("Accept", "application/json");
-      if (API_KEY.length()) http.addHeader("X-API-KEY", API_KEY);
-      code = http.POST(payload);
-      resp = http.getString();
-      http.end();
-    }
-  }
-  recordPushResult(g_lastPushRow /*ou g_lastPushEtat*/, API_URL.c_str(), code, resp);
+  recordPushResult(g_lastPushRow, API_URL.c_str(), code, resp);
+  Serial.printf("[API] stationdirect -> code=%d\n", code);
+  app_logf("[API] stationdirect -> code=%d\n", code);
+  Serial.println(resp);
+  app_logf("%s", resp.c_str());
+
   return (code >= 200 && code < 300);
-
 }
+
+
 
 bool sendEtatCapteursToApi(
     const Modules& mods,
@@ -271,6 +284,7 @@ bool sendEtatCapteursToApi(
 bool sendLatestEtatStationMeteoToApi() {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("[API] WiFi non connecté");
+        app_logf("[API] WiFi non connecté");
         recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), -2, "No WiFi");
         return false;
     }
@@ -278,6 +292,7 @@ bool sendLatestEtatStationMeteoToApi() {
     EtatCapteurs ec;
     if (!readLatestEtatCapteurs(ec)) {
         Serial.println("[API] Impossible de lire etatcapteurs");
+        app_logf("[API] Impossible de lire etatcapteurs");
         recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), -3, "Read etatcapteurs failed");
         return false;
     }
@@ -303,6 +318,7 @@ bool sendLatestEtatStationMeteoToApi() {
     serializeJson(doc, payload);
 
     Serial.println("Payload JSON envoyé (etatstationmeteo) :");
+    app_logf("Payload JSON envoyé (etatstationmeteo) : %s", payload.c_str());
     Serial.println(payload);
 
     WiFiClientSecure client;
@@ -310,6 +326,7 @@ bool sendLatestEtatStationMeteoToApi() {
     HTTPClient http;
     if (!http.begin(client, API_URL_ETATSTATION)) {
         Serial.println("[API] http.begin() a échoué");
+        app_logf("[API] http.begin() a échoué");
         recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), -1, "http.begin() failed");
         return false;
     }
@@ -322,7 +339,9 @@ bool sendLatestEtatStationMeteoToApi() {
     String resp = http.getString();
 
     Serial.printf("[API] PUT %s -> code %d\n", API_URL_ETATSTATION, code);
+    app_logf("[API] PUT %s -> code %d\n", API_URL_ETATSTATION.c_str(), code);
     Serial.println(resp);
+    app_logf("%s", resp.c_str());
 
     http.end();
 
@@ -428,6 +447,31 @@ String buildStationJsonPayload() {
     if (!isnan(sd.anemometre))    doc["anemometre"]        = round2(sd.anemometre);
     if (!isnan(sd.pluviometre))   doc["pluviometre"]       = round2(sd.pluviometre);
     if (!isnan(sd.rafale))        doc["rafale"]            = round2(sd.rafale);
+    
+    // --- Direction vent : girouette (priorité DB, secours RAM) ---
+    // Si StationDirect possède un champ float 'girouette' (0..359), on l'utilise.
+    // Sinon, on bascule sur la variable RAM 'degret' (mise à jour en continu dans main.cpp).
+    #if defined(__cplusplus)
+    // ⚠️ Si 'sd.girouette' n'existe pas dans StationDirect, supprime ce if(...) et garde le fallback RAM.
+    if (!isnan(sd.girouette)) {
+        // arrondir proprement et borner dans [0..359]
+        int gir = (int)floorf(sd.girouette + 0.5f);
+        if (gir < 0) gir = (gir % 360 + 360) % 360; else gir %= 360;
+        doc["girouette"] = gir;
+    } else
+    #endif
+    {
+        // Fallback RAM (degret)
+        if (degret >= 0 && degret < 360) doc["girouette"] = degret;
+        else doc["girouette"] = nullptr;  // valeur inconnue
+    }
+    
+    if (sd.timestamp.length()) {
+        doc["datetime"]    = sd.timestamp;           // "YYYY-MM-DD HH:MM:SS"
+        doc["datemeasure"] = toISO8601(sd.timestamp); // "YYYY-MM-DDTHH:MM:SS+00:00"
+    }
+
+
 
     // tensions : elles sont stockées dans etatcapteurs -> lire le dernier enregistrement
     EtatCapteurs ec;
@@ -463,6 +507,14 @@ String buildStationJsonPayload() {
     }
   }
 
+
+  
+
+
+
+
+
+
   // wifi (toujours)
   doc["wifi_rssi"] = g_stationInfo.wifi_rssi;
   doc["wifi_percent"] = g_stationInfo.wifi_percent;
@@ -489,6 +541,183 @@ String buildStationJsonPayload() {
   serializeJson(doc, payload);
   return payload;
 }
+
+
+// --- Helpers ISO ---
+static String nowISO() {
+  // Si tu as RTC + NTP, tu peux construire un ISO local. Sinon, prends sd.timestamp -> toISO8601()
+  // Ici, on laisse vide si indispo; l'appel plus bas préférera sd.timestamp si dispo.
+  return String("");
+}
+
+
+// Arrondir un float à d décimales (pour écrire un nombre JSON)
+static inline float roundN(float v, uint8_t d) {
+  if (isnan(v)) return v;
+  float p = powf(10.f, d);
+  return roundf(v * p) / p;
+}
+
+// "12.34" -> "12,34" (string)
+static String frenchDecimalStr(float v, uint8_t digits = 2) {
+  char buf[24]; dtostrf(v, 0, digits, buf);
+  String s(buf); s.replace('.', ',');
+  return s;
+}
+
+// S'assurer que l'angle est entier 0..359
+static inline int normDegInt(float deg) {
+  if (isnan(deg)) return 0;
+  int g = (int)floorf(deg + 0.5f);
+  g = (g % 360 + 360) % 360;
+  return g;
+}
+
+
+
+#include <time.h>
+
+// "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DDTHH:MM:SSZ"
+static String toISO8601Z(const String& tsSqlite) {
+  if (tsSqlite.length() < 19) return String(""); // entrée vide/trop courte
+  String s = tsSqlite;
+  s.replace(' ', 'T');        // espace -> T
+  s.trim();
+  // Si déjà suffixé 'Z', renvoie tel quel
+  if (s.endsWith("Z")) return s;
+  return s + "Z";
+}
+
+// Ajoute ".000Z" si la chaîne ISO n’a pas de millisecondes
+static String ensureMillisZ(const String& iso) {
+  // "YYYY-MM-DDTHH:MM:SSZ" == 20 caractères -> on suffixe .000Z
+  if (iso.endsWith("Z") && iso.length() == 20) {
+    String s = iso;
+    s.remove(s.length() - 1); // retire le 'Z'
+    s += ".000Z";
+    return s;
+  }
+  return iso;
+}
+
+// Construit un ISO UTC "YYYY-MM-DDTHH:MM:SS.mmmZ" basé sur l’horloge système (NTP/RTC)
+static String nowISOZ() {
+  time_t t = time(nullptr);
+  if (t <= 0) {
+    // Fallback dur si l’horloge n’est pas prête : 1970-01-01T00:00:00.000Z
+    return String("1970-01-01T00:00:00.000Z");
+  }
+  struct tm tmUtc;
+  gmtime_r(&t, &tmUtc);              // UTC
+  char buf[32];
+  // Millisecondes non disponibles via time(), on met .000
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
+           tmUtc.tm_year + 1900, tmUtc.tm_mon + 1, tmUtc.tm_mday,
+           tmUtc.tm_hour, tmUtc.tm_min, tmUtc.tm_sec);
+  return String(buf);
+}
+
+
+// Builder STRICT pour /stationdirect : champs alignés à Postman, types minimalistes
+String buildStationJsonPayloadStrict() {
+  StationDirect sd;
+  bool haveDb = readLatestStationDirect(sd);
+  StaticJsonDocument<1024> doc;
+
+
+  // --- dateheure : DB -> RAM -> now() ---
+  if (haveDb && sd.timestamp.length()) {
+    doc["dateheure"] = ensureMillisZ(toISO8601Z(sd.timestamp));
+  } else if (g_measurements.datetime.length()) {
+    doc["dateheure"] = ensureMillisZ(toISO8601Z(g_measurements.datetime));
+  } else {
+    doc["dateheure"] = nowISOZ(); // jamais vide
+  }
+
+
+  if (haveDb) {
+    // Mesures principales (types alignés)
+    if (!isnan(sd.tempdht22))   doc["tempdh22"]    = roundN(sd.tempdht22, 1);
+    if (!isnan(sd.tempbmp280))  doc["tempbmp280"]  = roundN(sd.tempbmp280, 1);
+    if (!isnan(sd.humiditer))   doc["humidite"]    = (int)roundf(sd.humiditer); // entier
+    if (!isnan(sd.pression))    doc["pression"]    = roundN(sd.pression, 1);
+
+    // ⚠️ NE PAS ENVOYER 'rafale' : champ absent du schéma stationdirect
+    // if (!isnan(sd.rafale)) doc["rafale"] = roundN(sd.rafale, 1); // <-- SUPPRIMÉ
+
+    if (!isnan(sd.anemometre))  doc["anemometre"]  = roundN(sd.anemometre, 1);
+    if (!isnan(sd.pluviometre)) doc["pluviometre"] = roundN(sd.pluviometre, 2);
+
+    // Girouette (int 0..359) : DB prioritaire, sinon fallback RAM
+    #if 1
+      if (!isnan(sd.girouette)) doc["girouette"] = normDegInt(sd.girouette);
+      else                      doc["girouette"] = normDegInt((float)degret);
+    #else
+      doc["girouette"] = normDegInt((float)degret);
+    #endif
+
+    // Lumière : si tu stockes déjà un pourcentage 0..100 en DB:
+    if (!isnan(sd.lumiere)) {
+      float raw = sd.lumiere;
+      int val = (raw <= 100.0f) ? (int)roundf(raw) : (int)roundf(raw); // adapte si tension->%
+      doc["lumiere"] = constrain(val, 0, 100);
+    } else {
+      // sinon, laisse vide (ou calcule depuis la tension si nécessaire)
+    }
+
+    // Point de rosée attendu en STRING
+    if (!isnan(sd.pointderosee)) {
+      doc["pointRose"] = frenchDecimalStr(sd.pointderosee, 2);
+    }
+
+    // tpsvie attendu en STRING
+    doc["tpsvie"] = String((int)sd.tpsvie);
+
+  } else {
+    // --- Fallback RAM ---
+    if (!isnan(g_measurements.temperature)) doc["tempdh22"]    = roundN(g_measurements.temperature, 1);
+    if (!isnan(g_measurements.tempbmp280))  doc["tempbmp280"]  = roundN(g_measurements.tempbmp280, 1);
+    if (!isnan(g_measurements.humidite))    doc["humidite"]    = (int)roundf(g_measurements.humidite);
+    if (!isnan(g_measurements.pression))    doc["pression"]    = roundN(g_measurements.pression, 1);
+
+    // ⚠️ NE PAS ENVOYER 'rafale' ici non plus
+    if (!isnan(g_measurements.anemometre))  doc["anemometre"]  = roundN(g_measurements.anemometre, 1);
+    if (!isnan(g_measurements.pluviometre)) doc["pluviometre"] = roundN(g_measurements.pluviometre, 2);
+
+    doc["girouette"] = normDegInt((float)degret);
+
+    if (!isnan(g_measurements.pointderosee)) {
+      doc["pointRose"] = frenchDecimalStr(g_measurements.pointderosee, 2);
+    }
+
+    // tpsvie string
+    doc["tpsvie"] = String((int)g_measurements.tpsvie);
+  }
+
+  
+  const String mfStart = nowISOZ();
+  const String mfEnd   = nowISOZ();
+
+  // Champs “Météo France” : tu peux mettre des chaînes vides si tu n’as pas la donnée
+  doc["Eclaire1km"]         = 0;
+  doc["Eclaire10km"]        = 0;
+  doc["Eclaire50km"]        = 0;
+  doc["alertemeteofrance"]  = "";
+  doc["couleurmeteofrance"] = "";
+  doc["datedebutmeteofrance"]= mfStart;   // ou ISO si tu veux
+  doc["datefinmeteofrance"]  = mfEnd;
+
+  // Ghost
+  doc["ghost"] = 0;
+
+  // Station : ID + chemin relatif pluralisé
+  doc["stationId"]    = STATION_ID;
+  doc["stationMeteos"]= String("/") + STATION_METEOS_PATH;  // "/api/station_meteos/2"
+
+  String out; serializeJson(doc, out);
+  return out;
+}
+
 
 // modifier le handler pour utiliser le helper
 void setupLocalStationApiHandler(WebServer &server) {

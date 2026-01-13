@@ -2,6 +2,7 @@
 #include <Adafruit_BMP280.h>
 #include <Arduino.h>
 #include "bmp280.h"
+#include "log.h"
 
 static Adafruit_BMP280 bmp;
 
@@ -15,6 +16,7 @@ bool initBMP280() {
   // Adresse 0x76 (ta configuration)
   if (!bmp.begin(0x76)) {
     Serial.println(F("BMP280 sensor not found!"));
+    app_logf("BMP280 sensor not found!");
     return false;
   }
 

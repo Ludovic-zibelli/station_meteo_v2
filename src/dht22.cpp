@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "dht22.h"
+#include "log.h"
 
 
 #define DHTPIN 4       // Pin connectée au DHT22
@@ -29,9 +30,11 @@ void initDHT() {
     if (!isnan(temp)) {
         dhtStatus = true;
         Serial.println("DHT22 initialisé avec succès.");
+        app_logf("DHT22 initialisé avec succès.\n");
     } else {
         dhtStatus = false;
         Serial.println("Échec de l'initialisation du DHT22.");
+        app_logf("Échec de l'initialisation du DHT22.\n");
     }
 
 }

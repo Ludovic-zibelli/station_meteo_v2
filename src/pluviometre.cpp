@@ -1,5 +1,6 @@
 // pluviometre.cpp
 #include "pluviometre.h"
+#include "log.h"
 
 // ---- Configuration ----
 // À CALIBRER en fonction de ton auget : mm de pluie par bascule
@@ -28,6 +29,7 @@ void initPluviometre() {
     // Si la sortie du A3144E passe à LOW quand l'aimant est présent -> FALLING
     attachInterrupt(digitalPinToInterrupt(HALL_SENSOR_PIN), isrPluviometre, FALLING);
     Serial.println("Pluviomètre initialisé sur D19 (interrupt + anti-rebond).");
+   app_logf("Pluviomètre initialisé sur D19 (interrupt + anti-rebond).");
 }
 
 void gestionPluviometre() {
@@ -42,6 +44,8 @@ void gestionPluviometre() {
         g_pluieTotale_mm += delta_mm;
         Serial.printf("[Pluie] +%.3f mm (tips=%lu) -> total=%.3f mm\n",
                       delta_mm, (unsigned long)tips, g_pluieTotale_mm);
+        app_logf("[Pluie] +%.3f mm (tips=%lu) -> total=%.3f mm",
+                   delta_mm, (unsigned long)tips, g_pluieTotale_mm);
     }
 }
 

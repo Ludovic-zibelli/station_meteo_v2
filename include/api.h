@@ -108,4 +108,9 @@ bool sendEtatCapteursToApi();
 bool sendLatestEtatStationMeteoToApi();
 void apiRefreshConfigFromDb();
 
+// Payload strict pour /stationdirect (aligné sur Postman)
+String buildStationJsonPayloadStrict();
+
+
+
 #endif

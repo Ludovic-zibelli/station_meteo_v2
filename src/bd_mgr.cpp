@@ -1,5 +1,6 @@
 // --- db_mgr.cpp ---
 #include "bd_mgr.h"
+#include "log.h"
 sqlite3* db = nullptr;
 SemaphoreHandle_t g_dbMutex = nullptr;
 
@@ -21,6 +22,7 @@ bool db_begin() {
   // Ne pas (ré)ouvrir la SPIFFS/DB pendant une OTA
   if (otaInProgress) {
     Serial.println("db_begin: OTA in progress, skipping DB open");
+    app_logf("db_begin: OTA in progress, skipping DB open");
     return false;
   }
 
@@ -49,6 +51,7 @@ bool db_reopen_if_needed(const char* path) {
   // Si une OTA est en cours, ne tentez pas de réouvrir la DB
   if (otaInProgress) {
     Serial.println("db_reopen_if_needed: OTA in progress, skipping reopen");
+    app_logf("db_reopen_if_needed: OTA in progress, skipping reopen");
     return false;
   }
 

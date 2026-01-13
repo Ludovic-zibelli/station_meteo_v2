@@ -13,6 +13,7 @@
 #include "pluviometre.h"
 #include "girouette.h"
 #include "sht40.h"
+#include "log.h"
 
 //Stockage des données
 #include "SPIFFS.h"
@@ -181,9 +182,35 @@ int module_sht40 = 0; //1 = SHT40 activé, 0 = désactivé
 // Flag global pour indiquer qu'une OTA est en cours (utilisé par api.cpp)
 volatile bool otaInProgress = false;
 
-// (OTA via ElegantOTA)
+// Variables de planification
+
+static unsigned long nextDueRow  = 0;   // échéance stationdirect
+static unsigned long nextDueEtat = 0;   // échéance etatstationmeteo
+static bool pushBusy = false;           // vrai pendant un envoi HTTP
 
 
+// Intervalles + jitter
+constexpr unsigned long ROW_PERIOD_MS  = 30000;   // 30 s
+constexpr unsigned long ETAT_PERIOD_MS = 60000;   // 60 s
+constexpr unsigned long ROW_JITTER_MS  = 250;     // ~250 ms
+constexpr unsigned long ETAT_OFFSET_MS = 5000;    // décalage 5 s
+
+
+// Échéancier stable pour la mise à jour capteurs + DB (30 s)
+static unsigned long nextUpdateMs = 0;
+constexpr unsigned long UPDATE_PERIOD_MS = 30000;
+
+// Helpers wrap-safe
+static inline bool timeReached(unsigned long now, unsigned long dueAt) {
+  return (long)(now - dueAt) >= 0;  // wrap-safe
+}
+static inline void reschedStable(unsigned long &dueAt, unsigned long period) {
+  dueAt += period;                           // période additionnelle -> régulier
+  // Si on est déjà en retard (ex: bloc long), rattrape proprement
+  while (timeReached(millis(), dueAt)) {
+    dueAt += period;
+  }
+}
 
 //Variable date heure
 char datetime[20]; // taille suffisante pour "2025-08-25 21:45:59"
@@ -270,7 +297,7 @@ static inline float rainHourMm()    { float d = g_rainCum_now - g_rainCum_t0h;  
 static inline float rainDayMm()     { float d = g_rainCum_now - g_rainCum_midnight;  return d < 0 ? 0.0f : d; }
 static inline float rainWeekMm()    { float d = g_rainCum_now - g_rainCum_t0w;       return d < 0 ? 0.0f : d; }
 
-
+unsigned long nowMsTest = 0;
 
 // --- PROTOTYPES (à mettre AVANT handleData) ---
 // Ne pas redonner de valeur par défaut ailleurs que ici
@@ -309,6 +336,7 @@ void setRTCFromNTP() {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
         Serial.println("Erreur NTP");
+        app_logf("Erreur NTP lors de la mise à l'heure du RTC");  
         return;
     }
 
@@ -369,8 +397,10 @@ void applyModuleChange(const Modules& oldM, const Modules& newM) {
       anemo_init(ANEMO_PIN, 0.6667f, 0.0f, 1, 2000, 100.0f);
       pinMode(ANEMO_PIN, INPUT_PULLUP);
       Serial.println(F("[CFG] Anémomètre ACTIVÉ"));
+      app_logf("[CFG] Anémomètre ACTIVÉ");
     } else {
       Serial.println(F("[CFG] Anémomètre DÉSACTIVÉ"));
+      app_logf("[CFG] Anémomètre DÉSACTIVÉ");
     }
   }
   
@@ -378,8 +408,10 @@ void applyModuleChange(const Modules& oldM, const Modules& newM) {
       if (newM.sht40) {
           initSHT40();
           Serial.println("[CFG] SHT40 ACTIVÉ");
+          app_logf("[CFG] SHT40 ACTIVÉ");
       } else {
           Serial.println("[CFG] SHT40 DÉSACTIVÉ");
+          app_logf("[CFG] SHT40 DÉSACTIVÉ");
       }
   }
   // ... idem pour pluvio, bmp280, dht22, girouette, tension ...
@@ -416,11 +448,14 @@ void handleCalibrationButton() {
         g_northOffsetDeg = wrap360f(g_northOffsetDeg - angle);
         girouette.setNorthOffsetDegrees(g_northOffsetDeg);
         Serial.printf("[Girouette] Calibration Nord OK ✅ (offset=%.1f°)\n", g_northOffsetDeg);
+        app_logf("[Girouette] Calibration Nord OK ✅ (offset=%.1f°)", g_northOffsetDeg);
       } else {
         Serial.println("[Girouette] Calibration ignorée: angle invalide ❌");
+        app_logf("[Girouette] Calibration ignorée: angle invalide ❌");
       }
     } else {
       Serial.println("[Girouette] Appui court ignoré.");
+      app_logf("[Girouette] Appui court ignoré.");
     }
   }
   btnPrev = s;
@@ -456,45 +491,66 @@ static int pctToBars(int pct) {
 
 
 
+// Accès DB partagés (définis dans bd_mgr.cpp)
+extern sqlite3* db;
+extern SemaphoreHandle_t g_dbMutex;
+
+// Petites fonctions d’aide pour le mutex
+static inline bool dbLock(uint32_t ms = 300) {
+  return g_dbMutex && xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(ms)) == pdTRUE;
+}
+static inline void dbUnlock() {
+  if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+}
+
+
 
 
 
 void handleData() {
-  sqlite3_stmt *stmt;
-  String json = "{";
+  // Pendant OTA, on évite l'accès à la DB
+  if (otaInProgress) {
+    server.send(503, "application/json", "{\"error\":\"OTA in progress\"}");
+    return;
+  }
 
-  // Lecture de la dernière ligne de station_direct
-  const char *sql =
+  String json = "{";
+  sqlite3_stmt* stmt = nullptr;
+
+  // ---------- station_direct (id=1) ----------
+  if (!dbLock(300)) {
+    server.send(503, "application/json", "{\"error\":\"db busy\"}");
+    return;
+  }
+
+  const char* sql1 =
     "SELECT tempdht22, humiditer, pression, tempbmp280, "
     "timestamp, tpsvie, pointderosee, "
     "anemometre, girouette, pluviometre, rafale "
-    "FROM station_direct ORDER BY id DESC LIMIT 1;";
+    "FROM station_direct WHERE id=1;";   // ✅ lit la ligne mise à jour par UPDATE
 
-  if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(db, sql1, -1, &stmt, NULL) == SQLITE_OK) {
     if (sqlite3_step(stmt) == SQLITE_ROW) {
       float temp         = round2f(sqlite3_column_double(stmt, 0));
       float hum          = round2f(sqlite3_column_double(stmt, 1));
       float press        = round2f(sqlite3_column_double(stmt, 2));
       float temp280      = round2f(sqlite3_column_double(stmt, 3));
-      String ts          = (const char *)sqlite3_column_text(stmt, 4);
+      String ts          = (const char*)sqlite3_column_text(stmt, 4);
       float tpsvie       = round2f(sqlite3_column_double(stmt, 5));
       float pointderosee = round2f(sqlite3_column_double(stmt, 6));
       float anemometre   = round2f(sqlite3_column_double(stmt, 7));
       float dir_db       = round2f(sqlite3_column_double(stmt, 8));
-      old_vitesse        = anemometre;
       float pluviometre  = round2f(sqlite3_column_double(stmt, 9));
       float rafale       = round2f(sqlite3_column_double(stmt, 10));
 
-      // ★ Corriger les opérateurs (&&, <, >)
       auto isValidDeg = [](float d) {
         return !isnan(d) && d >= 0.0f && d < 360.0f;
       };
-
       extern int degret;
       float directionFinale = isValidDeg((float)degret) ? (float)degret
-                            : (isValidDeg(dir_db)       ? dir_db : 0.0f);
+                             : (isValidDeg(dir_db)       ? dir_db : 0.0f);
 
-      // --- Corps JSON principal ---
+      // Corps JSON principal
       json += "\"temperature\":"  + String(temp, 2) + ",";
       json += "\"humidite\":"     + String(hum, 2) + ",";
       json += "\"pression\":"     + String(press, 2) + ",";
@@ -520,7 +576,8 @@ void handleData() {
       json += ",\"wifi_rssi\":"    + String(rssi);
       json += ",\"wifi_percent\":" + String(pct);
       json += ",\"wifi_bars\":"    + String(bars);
-      // --- Min/Max JOUR + All-time (scalaires) ---
+
+      // Min/Max JOUR + All-time
       addNum(json, "t_min_day", ST_tempExt.minDay, 1);
       addNum(json, "t_max_day", ST_tempExt.maxDay, 1);
       addNum(json, "t_min_all", ST_tempExt.minAll, 1);
@@ -551,43 +608,47 @@ void handleData() {
       addIntOrNull(json, "gust_dir_day", GUST_dirDay);
       addNum(json, "gust_max_all", GUST_maxAll, 1);
       addIntOrNull(json, "gust_dir_all", GUST_dirAll);
-
-
     }
-    sqlite3_finalize(stmt);
   }
+  sqlite3_finalize(stmt);
+  dbUnlock();  // 🔓
 
-  // Lecture de la dernière ligne de tensions
-  const char *sql2 =
-    "SELECT tension_batterie, tension_solaire "
-    "FROM tensions ORDER BY id DESC LIMIT 1;";
+  // ---------- tensions (id=1) ----------
+  if (!dbLock(300)) {
+    // On ne casse pas l'ensemble : on répond tout de même le JSON sans tensions
+    // (ou renvoyer 503 si tu veux strict)
+    json += ",\"tension_batterie\":null,\"tension_solaire\":null";
+  } else {
+    const char* sql2 =
+      "SELECT tension_batterie, tension_solaire "
+      "FROM tensions WHERE id=1;";     // ✅ lit la ligne mise à jour par UPDATE
 
-  if (sqlite3_prepare_v2(db, sql2, -1, &stmt, NULL) == SQLITE_OK) {
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-      float tension_bat = round2f(sqlite3_column_double(stmt, 0));
-      float tension_sol = round2f(sqlite3_column_double(stmt, 1));
-
-      // ★ Ajouter une virgule si on n'est plus au début de l'objet
-      if (!json.endsWith("{")) json += ",";
-
-      json += "\"tension_batterie\":" + String(tension_bat) + ",";
-      json += "\"tension_solaire\":"  + String(tension_sol);
+    if (sqlite3_prepare_v2(db, sql2, -1, &stmt, NULL) == SQLITE_OK) {
+      if (sqlite3_step(stmt) == SQLITE_ROW) {
+        float vb = round2f(sqlite3_column_double(stmt, 0));
+        float vs = round2f(sqlite3_column_double(stmt, 1));
+        if (!json.endsWith("{")) json += ",";
+        json += "\"tension_batterie\":" + String(vb) + ",";
+        json += "\"tension_solaire\":"  + String(vs);
+      }
     }
     sqlite3_finalize(stmt);
+    dbUnlock();  // 🔓
   }
 
   // Fermeture propre
   if (json.endsWith(",")) json.remove(json.length() - 1);
   json += "}";
-
   server.send(200, "application/json", json);
 }
+
 
 
 void connectWifiFromDB() {
   AppConfig cfg;
   if (!readAppConfig(cfg)) {
     Serial.println("❌ Lecture config Wi‑Fi échouée");
+    app_logf("Lecture config Wi‑Fi échouée");
     return;
   }
   Serial.printf("Connexion Wi‑Fi à : %s\n", cfg.ssid_wifi.c_str());
@@ -605,6 +666,7 @@ void connectWifiFromDB() {
     Serial.println(WiFi.localIP());
   } else {
     Serial.println("\n❌ Impossible de se connecter au Wi‑Fi");
+    app_logf("Impossible de se connecter au Wi‑Fi");
   }
 }
 
@@ -898,6 +960,12 @@ inline void updateStat(StatScalar& s, float v, time_t now) {
 
 
 
+// Entêtes anti-cache pour les réponses HTTP
+static inline void sendNoCacheHeaders(WebServer& srv) {
+  srv.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  srv.sendHeader("Pragma", "no-cache");
+}
+
 
 
 
@@ -918,6 +986,29 @@ void setup() {
   }
 
   
+  log_init("/log.txt", 100);               // fichier + limite
+  log_set_flush_period(60000);             // 60 s
+  app_logf("Boot station");                // première ligne
+
+
+  unsigned long nowMs = millis();
+  // ⚡ Pour tester rapidement : première mise à jour DB dans ~2 s
+  nextUpdateMs = nowMs + 2000;
+
+  // Envoi stationdirect 5 s après la mise à jour DB
+  nextDueRow  = nextUpdateMs + 5000;            // ≈ T+7 s
+
+  // Envoi etatstationmeteo ≈ 60 s après la mise à jour DB
+  nextDueEtat = nextUpdateMs + 65000;           // ≈ T+67 s
+
+  // Jitter optionnel
+  randomSeed((uint32_t)esp_random());
+  nextDueRow  += random(100, 400);
+  nextDueEtat += random(100, 400);
+
+
+
+  nextUpdateMs = millis() + UPDATE_PERIOD_MS;     // 1re mise à jour dans 30 s
   // --- NVS Records ---
   prefs.begin("records", false);   // namespace "records"
   loadAllTimeRecords();            // charge min/max absolus depuis NVS
@@ -935,8 +1026,12 @@ void setup() {
   
   if (!db_begin()) {
     Serial.println("❌ DB init KO");
+    app_logf("DB init KO");
+      
+
   } else {
     Serial.println("✅ DB ouverte");
+    app_logf("DB ok");
   }
   apiRefreshConfigFromDb();   // charge API_URL, API_KEY, STATION_ID, etc.
   /*
@@ -956,6 +1051,7 @@ void setup() {
 
   if (!rtc.begin()) {
     Serial.println("RTC non détecté !");
+    app_logf("RTC non détecté !");
     //while (1);
   }
   
@@ -966,12 +1062,14 @@ void setup() {
   if (!initBMP280()) 
   {
       Serial.println(F("Failed to initialize BMP280. Check wiring."));
+      app_logf("Failed to initialize BMP280. Check wiring.");
       bmp_ok = false;
     
   }else
   {
       bmp_ok = true;
       Serial.println(F("BMP280 initialized successfully."));
+      app_logf("BMP280 initialized successfully.");
   }
 
   // Initialisation de l'anémomètre
@@ -991,7 +1089,7 @@ void setup() {
 
 
   //Declaration entree anemo
-  pinMode(ANEMO_PIN, INPUT);   // interrupteur Reed à la pin 8
+  pinMode(ANEMO_PIN, INPUT_PULLUP);   // interrupteur Reed à la pin 8
   // Configurer les pins ADC (au besoin, ajustez l'atténuation ici si nécessaire)
   analogSetPinAttenuation(BATTERY_PIN, ADC_11db);
   analogSetPinAttenuation(SOLAR_PIN, ADC_11db);
@@ -1093,6 +1191,7 @@ server.on("/vane/calibrate", HTTP_POST, []() {
     Serial.printf("[Girouette] Calibration Nord API OK (offset=%.1f°)\n", g_northOffsetDeg);
   } else {
     server.send(500, "application/json", "{\"ok\":false}");
+    app_logf("[Girouette] Calibration API ignorée: angle invalide");
     Serial.println("[Girouette] Calibration API ignorée: angle invalide");
   }
 });
@@ -1406,6 +1505,26 @@ server.on("/api/push/status", HTTP_GET, [] (){
 
 
 
+
+  // Routes HTTP pour consulter/vider
+  server.on("/log.txt", HTTP_GET, [] ()  {
+    String body;
+    if (!log_read(body, 16*1024)) body = "(journal indisponible)";
+    server.sendHeader("Cache-Control","no-store, no-cache, must-revalidate, max-age=0");
+    server.sendHeader("Pragma","no-cache");
+    server.send(200, "text/plain", body);
+  });
+  server.on("/log/clear", HTTP_POST, [] () {
+    log_clear();
+    server.sendHeader("Cache-Control","no-store, no-cache, must-revalidate, max-age=0");
+    server.sendHeader("Pragma","no-cache");
+    server.send(200, "application/json", "{\"ok\":true}");
+  });
+
+
+
+
+
 // ElegantOTA integration commented out to avoid conflicts with ArduinoOTA
 // ElegantOTA.begin(&server);
 // ElegantOTA.onStart(...) { ... }
@@ -1425,6 +1544,7 @@ static bool dbMutexWasTaken = false;
 
 ArduinoOTA.onStart([]() {
   Serial.println("ArduinoOTA start — preparing safe state...");
+  app_logf("[ArduinoOTA] start — preparing safe state...");
   otaInProgress = true;
 
   // (Optionnel) détacher interruptions si tu veux éviter des burst:
@@ -1439,6 +1559,7 @@ ArduinoOTA.onStart([]() {
     xSemaphoreGive(g_dbMutex);
   } else {
     Serial.println("DB mutex busy — skip db_end()");
+    app_logf("[ArduinoOTA] DB mutex busy — skip db_end()");
   }
 
   // ⚠️ SPIFFS.end() à éviter si le WebServer sert des fichiers
@@ -1447,12 +1568,14 @@ ArduinoOTA.onStart([]() {
 
 ArduinoOTA.onEnd( []() {
   Serial.println("ArduinoOTA end — restoring...");
+  app_logf("[ArduinoOTA] end — restoring...");
   // 1) Remonter DB (mutex pris seulement si nécessaire/possible)
   if (g_dbMutex && xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
     if (!db_begin()) Serial.println("DB reopen failed");
     xSemaphoreGive(g_dbMutex);
   } else {
     Serial.println("DB mutex busy — deferred db_begin()");
+    app_logf("[ArduinoOTA] DB mutex busy — deferred db_begin()");
   }
 
   // 2) SPIFFS reste monté; si tu l'avais démonté, remonte ici.
@@ -1481,11 +1604,13 @@ ArduinoOTA.onEnd( []() {
 
 ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
   Serial.printf("ArduinoOTA progress: %u/%u\n", progress, total);
+  app_logf("ArduinoOTA progress: %u/%u\n", progress, total);
 });
 
 
 ArduinoOTA.onError([](ota_error_t error) {
   Serial.printf("ArduinoOTA Error[%u]\n", error);
+  app_logf("ArduinoOTA Error[%u]\n", error);
 
   otaInProgress = false; // ✅ pour permettre la remise en état
 
@@ -1505,6 +1630,7 @@ ArduinoOTA.onError([](ota_error_t error) {
   File file = root.openNextFile();
   while (file) {
     Serial.println(file.name());
+    app_logf(file.name());
     file = root.openNextFile();
   }
 
@@ -1517,10 +1643,12 @@ ArduinoOTA.onError([](ota_error_t error) {
   // 5) 👉 DÉMARRER le serveur web
   server.begin();
   Serial.println("WebServer ready.");
+  app_logf("WebServer ready.");
 
   // 6) 👉 DÉMARRER ArduinoOTA (après Wi‑Fi OK)
   ArduinoOTA.begin();
   Serial.println("ArduinoOTA ready.");
+   app_logf("ArduinoOTA ready.");
 
   
 
@@ -1566,6 +1694,7 @@ void loop() {
         db_reopen_if_needed("/spiffs/station.db");                // réouvre seulement si nécessaire
       } else {
         Serial.println("OTA in progress — skipping db_reopen_if_needed");
+        app_logf("OTA in progress — skipping db_reopen_if_needed");
       }
       tDbHealth = millis();
     }
@@ -1613,29 +1742,55 @@ void loop() {
     
    // [CONSERVÉ] Poll modules (toutes 5 s) + applyModuleChange(...)
 
+
+    // --- Poll modules + activation API (toutes les 5 s) — UN SEUL BLOC
     static unsigned long tPollMods = 0;
     if (millis() - tPollMods >= 5000) {
       Modules newMods;
       if (loadModulesFromDB(newMods)) {
         if (!modulesEqual(newMods, mods)) {
-          // Applique uniquement ce qui change
-          applyModuleChange(mods, newMods);  // old, new
-          mods = newMods;                    // mise à jour de l'état courant
+          applyModuleChange(mods, newMods);
+          mods = newMods;
           Serial.println(F("[CFG] Modules modifiés -> appliqués"));
+          app_logf("[CFG] Modules modifiés -> appliqués");
         }
       } else {
         Serial.println(F("Erreur lors de la lecture des modules."));
+        app_logf("Erreur lors de la lecture des modules.");
       }
+      int activation = 0;
+      if (readActivationApi(activation)) activation_envoi_api = activation;
       tPollMods = millis();
     }
 
 
+
    
     //Gestion activation des modules
-    if (updateModuleVariablesFromDB(1)) {
-      Serial.println("Activation des modules mis à jour depuis la base !");
-    } else {
-      Serial.println("Erreur lors de la lecture des modules.");
+
+    // TOUTES LES 5 s
+    static unsigned long tDbPoll = 0;
+    if (millis() - tDbPoll >= 5000) {
+      Modules newMods;
+      if (loadModulesFromDB(newMods)) {
+        if (!modulesEqual(newMods, mods)) {
+          applyModuleChange(mods, newMods);
+          mods = newMods;
+          Serial.println(F("[CFG] Modules modifiés -> appliqués"));
+          app_logf("[CFG] Modules modifiés -> appliqués");
+        }
+      } else {
+        Serial.println(F("Erreur lors de la lecture des modules."));
+        app_logf("Erreur lors de la lecture des modules.");
+      }
+
+      // Lis aussi l’activation API ici, pas à chaque loop :
+      int activation = 0;
+      if (readActivationApi(activation)) {
+        activation_envoi_api = activation;
+      }
+
+      tDbPoll = millis();
     }
 
     if(module_anemo == 1) {
@@ -1653,9 +1808,9 @@ void loop() {
       vitesse = 0.0;
     }
 
-    //envoi des données à l'API
+    
     if(old_vitesse != vitesse){
-      updateAnemometre(1, vitesse); // Met à jour la valeur de l'anémomètre dans la base de données
+      //updateAnemometre(1, vitesse); // Met à jour la valeur de l'anémomètre dans la base de données
     }
     
 
@@ -1685,285 +1840,180 @@ void loop() {
     Serial.print("DateTime = ");
     Serial.println(datetime);
 
-    static unsigned long lastSendEtatStation = 0;
-    if (millis() - lastSendEtatStation > 60000) { // toutes les 60 secondes
-        sendLatestEtatStationMeteoToApi();
-        lastSendEtatStation = millis();
-    }
-    // Effectuer les tâches toutes les 30 secondes (30000 ms)
-    if (currentTime - previousTime >= 30000) {
-        previousTime = currentTime;
-
-      // Affichage des données dans le moniteur série
-      Serial.println("--- Mise à jour des données ---");
-      // BMP280
-      if( module_bmp280 == 1) { 
-        if (bmp_ok) {
-          readBMP280(temp1, pression, altitude);
+    // Envoi des données à l'API si activé
    
-          if (!isnan(temp1) && !isnan(pression)) {
-              etat_bmp280 = 1;
-            } else {
-              etat_bmp280 = 0;
-            }
-          } else {
-            etat_bmp280 = 0;
-          }
-        } else {
-          temp1 = 0.0;
-          pression = 0.0;
-          altitude = 0.0;
-        }
-        Serial.print("État BMP280 : ");
-        Serial.println(etat_bmp280);
-        //Au cas ou le BMP280 ne répond plus
-        if (!bmp_ok) {
-          bmp_ok = initBMP280();
-        }
 
-        Serial.print("Température BMP280: ");
-        Serial.print(temp1);
-        Serial.println(" °C");
+  
+  auto resched = [](unsigned long &dueAt, unsigned long period, unsigned long jitter=0){
+    dueAt += period;                                   // période stable
+    if ((long)(millis() - dueAt) >= 0) dueAt = millis() + period; // rattrapage si retard
+    if (jitter) dueAt += jitter;                       // petit décalage
+  };
 
-        Serial.print("Pression: ");
-        Serial.print(pression);
-        Serial.println(" hPa");
+  
+    //static unsigned long lastSendEtatStation = 0;
+    //if (millis() - lastSendEtatStation > 60000) { // toutes les 60 secondes
+    //    sendLatestEtatStationMeteoToApi();
+    //    lastSendEtatStation = millis();
+    //}
 
-        Serial.print("Altitude: ");
-        Serial.print(altitude);
-        Serial.println(" m");
+    // Effectuer les tâches toutes les 30 secondes (30000 ms)
 
-        // DHT22
-        temp2 = getTemperature();
-        humiditer = getHumidity();
-        if(module_dht22 == 1)
-          {
-          if(isDHTReady())
-            {
-                if (temp2 != -999.0 && humiditer != -999.0) {
-                Serial.print("Température : ");
-                Serial.print(temp2);
-                Serial.print(" °C | Humidité : ");
-                Serial.print(humiditer);
-                Serial.println(" %");
-                etat_dht22 = 1;
-            } else {
-                Serial.println("Erreur de lecture du DHT22.");
-                etat_dht22 = 0;
-            }
-
-          }else
-          {
-            temp2 = 0.0;
-            humiditer = 0.0;
-          }
-        } else
-        {
-            Serial.println("Capteur DHT22 non prêt.");
-            etat_dht22 = 0;
-        }
-        Serial.print("État DHT22 : ");
-        Serial.println(etat_dht22);
-
-        if (module_sht40 == 1) {
-            float tempSHT = getSHT40Temperature();
-            float humSHT = getSHT40Humidity();
-            if (tempSHT != -999.0 && humSHT != -999.0) {
-                Serial.printf("SHT40 -> Temp: %.2f °C, Hum: %.2f %%\n", tempSHT, humSHT);
-            } else {
-                Serial.println("Erreur lecture SHT40");
-            }
-        }
-
-        // Calcul du point de rosée
-        float point_de_rosee = calculPointRosee(temp1, humiditer);
-
-        //Anemometre
-        Serial.print("Anémomètre: ");
-        Serial.print(anemo_get_speed_kmh(), 1);
-        Serial.print(" km/h | Rafale=");
-        Serial.print(anemo_get_gust_kmh(), 1);
-        Serial.println(" km/h");
-        Serial.print("État anémomètre : ");
-        Serial.println(etat_anemo);
-
-
-        Serial.print("Plui: ");
-        Serial.print(quantite);
-        Serial.println(" mm");
-
-        Serial.print("Point de rosee: ");
-        Serial.print(point_de_rosee);
-        Serial.println(" °C");
-
-        //Girouette
-        if(module_girou == 1){
-          // Lecture "simple"
-        
-          
-          // 1) Mettre à jour la girouette avec un petit debounce non bloquant
-          //    (update() lit 1 fois, puis 2 confirmations avec delay(debounceMs) → ici ~2x2ms)
-          girouette.update(/*debounceMs=*/2, /*stableReads=*/3);
-
-          
-          // 2) Gérer le bouton (appui long -> calibration)
-          handleCalibrationButton();
-
-          // 3) Affichage périodique
-          static unsigned long tPrint = 0;
-          if (millis() - tPrint >= 1000) {
-            tPrint = millis();
-
-            // readAngle(windowMs) relance une petite fenêtre de mesure (~12-18ms selon windowMs)
-            // Si tu veux éviter ce délai, on peut ajouter un getter dans la classe pour l'angle courant.
-            degret = girouette.readAngle(30);
-            const char* name = girouette.readName(30);
-
-            Serial.print(F("[Girouette] Dir="));
-            Serial.print(name);
-            Serial.print(F(" | Angle="));
-            if (isnan(degret)) Serial.println(F("NaN"));
-            
-            //float angle_etat = girouette.readAngle(30); // angle actuel
-              if (!isnan(degret)) {
-                etat_girou = 1; // fonctionne
-              } else {
-                etat_girou = 0; // problème
-              }
-
-              // Affichage pour debug
-              Serial.print(F("Etat girouette: "));
-              Serial.println(etat_girou);
-            
-          }
-        }
-        else
-        {
-          degret = 0;
-          etat_girou = 0;
-        }
-        
-    if (otaInProgress) {
-      // 👉 Pas d’écriture DB, pas de reopen, pas d’envoi API ici
-      // (tu peux garder les lectures capteurs/affichages si ça n’utilise pas la DB)
-    } else {
- 
     
-      float temp1_r   = round2f(temp1);
-      float pression_r     = round2f(pression);
-      float temp2_r    = round2f(temp2);
-      float humiditer_r    = round2f(humiditer);
-      float point_de_rosee_r = round2f(point_de_rosee);
-      float vitesse_r      = round2f(vitesse);
-      float rafale_r       = round2f(rafale);
+    
+  // --- Lectures capteurs périodiques & mise à jour DB (toutes les 30 s)
+  unsigned long nowMs = millis();
+  if (timeReached(nowMs, nextUpdateMs)) {
+    Serial.println("--- Mise à jour des données ---");
 
-        //Mise à jour de la base de données
-        if (updateStationDirect(
-            1,                // id de la ligne à mettre à jour
-            temp2_r,            // tempdht22 (température DHT22)
-            humiditer_r,        // humiditer
-            temp1_r,            // tempbmp280 (température BMP280)
-            pression_r,         // pression
-            tension_solaire,  // lumiere (ou la variable correspondant à la luminosité)
-            vitesse_r,          // anemometre
-            degret,           // girouette (ou la variable correspondant à la direction)
-            quantite,         // pluviometre
-            point_de_rosee_r,   // pointderosee (à calculer si besoin)
-            0.0,              // ghost (à définir selon ton usage)
-            currentTime,               // tpsvie (à définir selon ton usage)
-            datetime,
-            rafale_r           // rafale (nouvelle variable pour la rafale)
-        )) {
-          Serial.println("Mise à jour réussie !");
-        } else {
-          Serial.println("Erreur lors de la mise à jour !");
-        }
+    // Anémomètre
+    if (module_anemo == 1) {
+      etat_anemo = anemo_ok_bit_strict();
+      anemo_update();
+      vitesse = anemo_get_speed_kmh();
+      rafale  = anemo_get_gust_kmh();
+      // Debug optionnel
+      // Serial.printf("Anémo: %.1f km/h, Rafale: %.1f km/h\n", vitesse, rafale);
+    } else {
+      etat_anemo = 0; vitesse = 0; rafale = 0;
+    }
 
-        // Mise à jour des tensions
-        float tension_batterie_r = round2f(tension_batterie);
-        float tension_solaire_r = round2f(tension_solaire);
-        if (updateTensions(
-        1,                // id de la ligne à mettre à jour
-        tension_batterie_r, // tension_batterie mesurée
-        tension_solaire_r   // tension_solaire mesurée
-        )) 
-        {
-            Serial.println("Tensions mises à jour !");
-        } else {
-            Serial.println("Erreur lors de la mise à jour des tensions !");
-        }
+    // BMP280
+    if (module_bmp280 == 1 && bmp_ok) {
+      readBMP280(temp1, pression, altitude);
+      etat_bmp280 = (!isnan(temp1) && !isnan(pression)) ? 1 : 0;
+      if (!bmp_ok) bmp_ok = initBMP280();  // tentative de relance
+    } else {
+      etat_bmp280 = 0; temp1 = pression = altitude = 0;
+    }
 
-        // Mise à jour de l'état des capteurs
-        if(updateEtatCapteurs(
-            1,                // id de la ligne à mettre à jour
-            etat_dht22,
-            etat_bmp280,
-            etat_pluvio,
-            etat_girou,
-            etat_anemo,
-            tension_batterie,
-            tension_solaire
-        )) 
-        {
-          Serial.println("État des capteurs mis à jour !");
-        } else {
-          Serial.println("Erreur lors de la mise à jour de l'état des capteurs !");
-        }
-        
-        // Dans loop(), avant l'envoi à l'API :
-        int activation = 0;
-        if (readActivationApi(activation)) {
-            activation_envoi_api = activation;
-        } else {
-            Serial.println("Erreur lecture activation_envoi_api !");
-        }
+    // DHT22 (lire seulement si activé et prêt)
+    if (module_dht22 == 1 && isDHTReady()) {
+      temp2     = getTemperature();
+      humiditer = getHumidity();
+      etat_dht22 = (temp2 != -999.0 && humiditer != -999.0) ? 1 : 0;
+    } else {
+      etat_dht22 = 0; temp2 = 0; humiditer = 0;
+    }
 
-        // Envoi des données à l'API si activé
-        if (activation_envoi_api == 1) {
-            sendLatestRowToApi();
-        } else {
-            Serial.println("Envoi des données à l'API désactivé.");
-        }
-      }
+    // SHT40 (si activé)
+    if (module_sht40 == 1) {
+      float tS = getSHT40Temperature();
+      float hS = getSHT40Humidity();
+      if (tS == -999.0 || hS == -999.0) Serial.println("Erreur lecture SHT40");
+      app_logf("[SHT40]Erreur lecture SHT40");
+    }
 
-        // ... à l'intérieur du bloc 30 s (après avoir mis à jour temp1, pression, temp2, humiditer, tension_batterie, tension_solaire, vitesse, rafale...)
-        time_t nowEpoch = now.unixtime();
+    // Tensions
+    tension_solaire  = solaire();
+    tension_batterie = batterie();
 
-        // Mettre à jour les séries scalaires
-     
-        updateStat(ST_tempExt,    temp1,            nowEpoch);          // ou temp2 si tu préfères DHT22
-        updateStat(ST_humExt,     (float)humiditer, nowEpoch);
-        updateStat(ST_press,      pression,         nowEpoch);
-        updateStat(ST_batt,       tension_batterie, nowEpoch);
-        updateStat(ST_solar,      tension_solaire,  nowEpoch);
+    // Pluviomètre
+    if (module_pluvio == 1) {
+      gestionPluviometre();
+      etat_pluvio = pluvio_active_bit();
+      quantite    = obtenirQuantitePluie_mm();
+    } else {
+      etat_pluvio = 0; quantite = 0;
+    }
 
-        // Rafales (records + direction au moment du pic)
-        if (!isnan(rafale)) {
-          if (rafale > GUST_maxDay) { GUST_maxDay = rafale; GUST_dirDay = degret; }
-          if (rafale > GUST_maxAll) {
-            float prevG = GUST_maxAll;
-            GUST_maxAll = rafale;
-            GUST_dirAll = degret;
-            if (GUST_maxAll != prevG) g_recordsDirty = true;
-          }
-        }
+    // Girouette
+    if (module_girou == 1) {
+      girouette.update(/*debounceMs=*/2, /*stableReads=*/3);
+      handleCalibrationButton();
+      float angle = girouette.readAngle(30);
+      degret = isnan(angle) ? -1 : (int)angle;
+      etat_girou = (degret >= 0) ? 1 : 0;
+    } else {
+      degret = 0; etat_girou = 0;
+    }
 
-        // Records scalaires: si un "all-time" change, flag Dirty
-        auto checkDirty = [](const StatScalar& s, const char* name){
-          static float lastMinAll_t = NAN, lastMaxAll_t = NAN;
-          if (name == nullptr) return;
-          // la closure ne stocke qu'un jeu; si tu veux plus fin, dupliques pour chaque série
-        };
-        if (!isnan(ST_tempExt.minAll) || !isnan(ST_tempExt.maxAll)) g_recordsDirty = true;
-        if (!isnan(ST_humExt.minAll)  || !isnan(ST_humExt.maxAll))  g_recordsDirty = true;
-        if (!isnan(ST_press.minAll)   || !isnan(ST_press.maxAll))   g_recordsDirty = true;
-        if (!isnan(ST_batt.minAll)    || !isnan(ST_batt.maxAll))    g_recordsDirty = true;
-        if (!isnan(ST_solar.minAll)   || !isnan(ST_solar.maxAll))   g_recordsDirty = true;
-        saveAllTimeRecordsIfDirty();
-      }
- 
+    // Point de rosée (à partir des mesures du moment)
+    float point_de_rosee = calculPointRosee(temp1, humiditer);
 
-    delay(100);  // Réduit le blocage à 100 ms pour fluidifier les lectures
+    // --- Mise à jour DB (station_direct / tensions / état capteurs)
+    if (!otaInProgress) {
+      Serial.println("Mise à jour de la base de données.");
+      float temp1_r         = round2f(temp1);
+      float pression_r      = round2f(pression);
+      float temp2_r         = round2f(temp2);
+      float humiditer_r     = round2f(humiditer);
+      float rosee_r         = round2f(point_de_rosee);
+      float vitesse_r       = round2f(vitesse);
+      float rafale_r        = round2f(rafale);
+      float vb_r            = round2f(tension_batterie);
+      float vs_r            = round2f(tension_solaire);
+
+      updateStationDirect(1, temp2_r, humiditer_r, temp1_r, pression_r,
+                          tension_solaire, vitesse_r, degret, quantite,
+                          rosee_r, 0.0, nowMs, datetime, rafale_r);
+
+      updateTensions(1, vb_r, vs_r);
+
+      updateEtatCapteurs(1, etat_dht22, etat_bmp280, etat_pluvio,
+                         etat_girou, etat_anemo, tension_batterie, tension_solaire);
+      
+      
+    }
+
+    // --- Stats & records (journaliers + all-time)
+    time_t nowEpoch = now.unixtime();
+    updateStat(ST_tempExt, temp1, nowEpoch);
+    updateStat(ST_humExt,  (float)humiditer, nowEpoch);
+    updateStat(ST_press,   pression, nowEpoch);
+    updateStat(ST_batt,    tension_batterie, nowEpoch);
+    updateStat(ST_solar,   tension_solaire,  nowEpoch);
+
+    if (!isnan(rafale)) {
+      if (rafale > GUST_maxDay) { GUST_maxDay = rafale; GUST_dirDay = degret; }
+      if (rafale > GUST_maxAll) { GUST_maxAll = rafale; GUST_dirAll = degret; g_recordsDirty = true; }
+    }
+    saveAllTimeRecordsIfDirty();
+
+    // --- PLANIFICATION des prochains push API par rapport à CETTE mise à jour
+    //     (on décale l’API pour laisser le temps aux lectures et DB de se stabiliser)
+    reschedStable(nextUpdateMs, UPDATE_PERIOD_MS);     // replanifier la prochaine mise à jour capteurs
+    
+    Serial.printf("[30s] nextUpdateMs=%lu nextDueRow=%lu nextDueEtat=%lu\n",
+                  nextUpdateMs, nextDueRow, nextDueEtat);
   }
+
+  // --- Envoi API (indépendant, cadencé par nextDueRow/nextDueEtat)
+  
+  bool dueRow  = ((long)(nowMs - nextDueRow)  >= 0);
+  bool dueEtat = ((long)(nowMs - nextDueEtat) >= 0);
+  
+  if (dueRow)  log_line("API: envoi station_direct");
+  if (dueEtat) log_line("API: envoi etatcapteurs");
+
+
+  Serial.printf("[SCHED] act=%d busy=%d now=%lu dueRow=%lu (in %ld ms) dueEtat=%lu (in %ld ms)\n",
+                activation_envoi_api, pushBusy, nowMs,
+                nextDueRow,  (long)(nextDueRow  - nowMs),
+                nextDueEtat, (long)(nextDueEtat - nowMs));
+
+  if (activation_envoi_api == 1 && !otaInProgress && !pushBusy) {
+    if (dueRow) {
+      pushBusy = true; sendLatestRowToApi(); pushBusy = false;
+      nextDueRow += ROW_PERIOD_MS;                 // +30 s
+      nextDueRow += (long)random(80, 420);         // petit jitter facultatif
+    }
+
+    if (dueEtat) {
+      pushBusy = true; sendLatestEtatStationMeteoToApi(); pushBusy = false;
+      nextDueEtat += ETAT_PERIOD_MS;               // +60 s (⚠ pas d'offset récurrent)
+      // on ne remet PAS ETAT_OFFSET_MS ici, l’offset n’est appliqué qu’une fois au tout début
+    }
+  } else if (activation_envoi_api != 1) {
+    Serial.println(F("Envoi des données à l'API désactivé."));
+    log_line("API: Envoi des données à l'API désactivé.");
+  }
+
+  log_tick();
+  delay(100);
+}
+
+
+  
 
 

@@ -4,6 +4,7 @@
 #include "bd_mgr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "log.h"
 
 // db est ouverte ailleurs
 extern sqlite3 *db;
@@ -141,6 +142,7 @@ bool readActivationApi(int &activation) {
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
       Serial.printf("❌ Prepare error (activation_envoi_api): %s\n", sqlite3_errmsg(db));
+      app_logf("Prepare error (activation_envoi_api): %s\n", sqlite3_errmsg(db));
       if (g_dbMutex) xSemaphoreGive(g_dbMutex);
       return false;
     }
@@ -151,6 +153,7 @@ bool readActivationApi(int &activation) {
         ok = true;
     } else {
         Serial.printf("❌ Step error (activation_envoi_api): %s\n", sqlite3_errmsg(db));
+        app_logf("Step error (activation_envoi_api): %s\n", sqlite3_errmsg(db));
     }
 
     sqlite3_finalize(stmt);
