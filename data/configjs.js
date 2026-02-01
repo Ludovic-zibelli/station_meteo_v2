@@ -28,6 +28,28 @@ async function postForm(url, obj) {
   return res.text();
 }
 
+// ============== Version info ==============
+async function loadVersionInfo() {
+  try {
+    const ver = await getJSON('/api/version');
+    setText('fw_version', ver.firmware || '—');
+    setText('config_version', ver.config_schema || '—');
+    setText('build_date', ver.build_date || '—');
+  } catch(err) {
+    console.warn('loadVersionInfo error:', err);
+  }
+
+  try {
+    const info = await getJSON('/api/localStationInfo');
+    if (info.config_last_modified) {
+      const dt = new Date(info.config_last_modified * 1000);
+      setText('config_modified', dt.toLocaleString('fr-FR'));
+    }
+  } catch(err) {
+    console.warn('config_last_modified fetch error:', err);
+  }
+}
+
 // ============== Chargement config (API + modules + NTP/TZ) ==============
 async function loadConfig() {
   try {
@@ -185,8 +207,184 @@ document.addEventListener('DOMContentLoaded', () => {
   on('apiForm', 'submit', (e) => { e.preventDefault(); saveApi(e); });
   on('modulesForm', 'submit', (e) => { e.preventDefault(); saveModules(e); });
 
+  loadVersionInfo();  // Charger les infos de version en premier
   loadConfig();
   refreshLive();
   setInterval(refreshLive, 10000);
 });
 
+
+
+// ====== LOG (/log.txt) ======
+
+// Helper texte brut (no-cache)
+async function getText(url) {
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
+}
+
+// Timer d'auto-refresh
+let logTimer = null;
+
+// Chargement des logs (N dernières lignes depuis /log/tail)
+async function loadLog(manual = false) {
+  try {
+    const nInput = $('logLines');
+    const n = Math.max(50, Math.min(2000, Number(nInput ? nInput.value : 250)));
+
+    // Lecture directe de la tail côté ESP (léger et fiable)
+    let raw = await getText(`/log/tail?n=${n}`);
+
+    // Normalisation douce (si jamais il y a des CR ou NUL)
+    raw = raw.replace(/\0/g, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    const box = $('logTail');
+    if (box) {
+      box.textContent = raw && raw.trim().length ? raw : '(journal vide)';
+      const auto = $('logAuto');
+      if (auto && auto.checked) box.scrollTop = box.scrollHeight;
+    }
+
+    setText('logStatus', `OK — ${n} lignes affichées • ${new Date().toLocaleTimeString()}`);
+    if (manual) toast('Journal rafraîchi ✅');
+
+  } catch (e) {
+    console.error('loadLog error:', e);
+    setText('logStatus', `Erreur: ${e.message}`);
+    if (manual) toast(`Erreur lecture journal: ${e.message}`, false);
+  }
+}
+
+// Effacement du log
+async function clearLog() {
+  try {
+    const res = await fetch('/log/clear', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    toast('Journal vidé ✅');
+    await loadLog(true);
+  } catch (e) {
+    console.error('clearLog error:', e);
+    toast(`Erreur effacement: ${e.message}`, false);
+  }
+}
+
+// (Re)démarrage de l’auto-refresh
+function startLogAuto() {
+  if (logTimer) clearInterval(logTimer);
+  const auto = $('logAuto');
+  if (auto && auto.checked) {
+    logTimer = setInterval(loadLog, 5000);
+  }
+}
+
+// Branche les événements du panneau “Journal”
+document.addEventListener('DOMContentLoaded', () => {
+  on('btnLogRefresh', 'click', () => loadLog(true));
+  on('btnLogClear', 'click', clearLog);
+
+  // Ces deux-là sont optionnels si tu as gardé des <a> href="/log.txt" dans config.html
+  on('btnLogOpen', 'click', () => window.open('/log.txt', '_blank'));
+  on('btnLogDownload', 'click', () => window.open('/log.txt', '_blank'));
+
+  on('logAuto', 'change', startLogAuto);
+  on('logLines', 'change', () => loadLog(true));
+
+  // Premier affichage + auto-refresh
+  loadLog(false);
+  startLogAuto();
+});
+
+// ====== Authentification & AP ======
+document.getElementById('btnLoadAuth').onclick = async ()=>{
+  const r = await fetch('/config/auth'); if(!r.ok) return alert('Erreur');
+  const j = await r.json();
+  viewer_user.value = j.auth.viewer_user;
+  admin_user.value  = j.auth.admin_user;
+  ap_ssid.value     = j.ap.ssid;
+  ap_chan.value     = j.ap.chan;
+  ap_maxc.value     = j.ap.maxc;
+  // (Les mots de passe sont masqués côté serveur)
+};
+
+document.getElementById('btnSaveAuth').onclick = async ()=>{
+  const fd = new FormData();
+  if (viewer_user.value) fd.append('viewer_user', viewer_user.value);
+  if (viewer_pass.value) fd.append('viewer_pass', viewer_pass.value);
+  if (admin_user.value)  fd.append('admin_user', admin_user.value);
+  if (admin_pass.value)  fd.append('admin_pass', admin_pass.value);
+  if (ap_ssid.value)     fd.append('ap_ssid', ap_ssid.value);
+  if (ap_pass.value)     fd.append('ap_pass', ap_pass.value);
+  if (ap_chan.value)     fd.append('ap_chan', ap_chan.value);
+  if (ap_maxc.value)     fd.append('ap_maxc', ap_maxc.value);
+
+  const r = await fetch('/config/auth.save', { method:'POST', body:fd });
+  if (r.ok) alert('OK (AP redémarré si modifié).');
+  else alert('Erreur sauvegarde');
+};
+
+
+const ipMode = document.getElementById('sta_ipmode'), ipInput = document.getElementById('sta_ip');
+ipMode.onchange = ()=>{ ipInput.style.display = (ipMode.value === 'static') ? 'inline-block' : 'none'; };
+
+document.getElementById('btnWifiScan').onclick = async ()=>{
+  const r = await fetch('/wifi/scan.json');   // protégé admin côté serveur
+  if (!r.ok) { alert("Scan en cours, réessaie dans 2-3s…"); return; }
+  const j = await r.json();
+  const body = document.getElementById('scanBody'); body.innerHTML = '';
+  (j.nets||[]).forEach(n=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${n.ssid}</td><td>${n.rssi} dBm</td><td>${n.chan}</td>
+      <td><button class="btn btn-outline" data-ssid="${n.ssid}">Choisir</button></td>`;
+    body.appendChild(tr);
+  });
+  document.getElementById('scanResults').style.display = 'block';
+  body.querySelectorAll('button[data-ssid]').forEach(b=>{
+    b.onclick = ()=>{ sta_ssid.value = b.dataset.ssid; };
+  });
+};
+
+document.getElementById('btnWifiSave').onclick = async ()=>{
+  const fd = new FormData();
+  if (!sta_ssid.value) { alert("Indique le SSID du Wi‑Fi maison."); return; }
+  fd.append('ssid', sta_ssid.value);
+  if (sta_pass.value)  fd.append('wifi_password', sta_pass.value);
+  fd.append('ip_wifi', ipMode.value === 'static' ? (ipInput.value||'dhcp') : 'dhcp');
+
+  const r = await fetch('/config/network', { method:'POST', body:fd });
+  if (r.ok) alert('OK. La station tente de se reconnecter au Wi‑Fi maison.');
+  else      alert('Erreur : ' + await r.text());
+};
+
+
+document.getElementById('btnLoadOfs').onclick = async ()=>{
+  const r = await fetch('/config/offsets');
+  if (!r.ok) return alert('Erreur lecture offsets');
+  const j = await r.json();
+  ofs_t_bmp.value   = j.t_bmp ?? 0;
+  ofs_t_dht.value   = j.t_dht ?? 0;
+  ofs_h_dht.value   = j.h_dht ?? 0;
+  ofs_press.value   = j.press ?? 0;
+  ofs_wind.value    = j.wind ?? 0;
+  ofs_t_sht40.value = j.t_sht40 ?? 0;
+};
+document.getElementById('btnSaveOfs').onclick = async ()=>{
+  const fd = new FormData();
+  fd.append('t_bmp',   ofs_t_bmp.value || 0);
+  fd.append('t_dht',   ofs_t_dht.value || 0);
+  fd.append('h_dht',   ofs_h_dht.value || 0);
+  fd.append('press',   ofs_press.value || 0);
+  fd.append('wind',    ofs_wind.value || 0);
+  fd.append('t_sht40', ofs_t_sht40.value || 0);
+  const r = await fetch('/config/offsets.save', { method:'POST', body:fd });
+  if (!r.ok) return alert('Erreur sauvegarde');
+  alert('Offsets enregistrés.');
+};
+
+document.getElementById('btnResetRec').onclick = async ()=>{
+  if (!confirm('Confirmer la réinitialisation des min/max ?')) return;
+  const fd = new FormData(); fd.append('scope', resetScope.value);
+  const r = await fetch('/records/reset', { method:'POST', body:fd });
+  if (!r.ok) return alert('Erreur reset');
+  alert('Min/Max réinitialisés.');
+};

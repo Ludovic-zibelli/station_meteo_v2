@@ -437,3 +437,228 @@ input::placeholder, textarea::placeholder {
 
 /* Option: un poil plus de contraste visuel sur les cards */
 .card { box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
+
+
+/* Zone d'affichage du journal */
+.logbox{
+  width:100%;
+  min-height:220px;
+  max-height:380px;        /* ajuste si besoin */
+  overflow:auto;
+  background:#0f1a2b;      /* cohérent avec tes inputs */
+  border:1px solid var(--card-border);
+  border-radius:10px;
+  padding:12px;
+  color:#e6f0ff;
+  font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  white-space:pre;          /* pas de wrap */
+}
+
+
+/* ===== Overrides clairs (fond sombre) ===== */
+
+/* Forcer les couleurs "muted"/secondaires de Bootstrap en clair */
+:root{
+  --bs-secondary-color: #eaeefb;
+  --bs-secondary-color-rgb: 234,238,251;
+}
+
+/* Texte "muted" partout en blanc/clair */
+.text-muted, .muted, small,
+.table .text-muted,
+.card .text-muted {
+  color: #eaeefb !important;
+  opacity: 1 !important;
+}
+
+/* Grilles key/value de tes cards : libellés et valeurs en blanc */
+.kv div:nth-child(odd),
+.kv div:nth-child(even) {
+  color: #ffffff !important;
+  opacity: 1 !important;
+}
+
+/* Table "État des capteurs" : en clair partout */
+.table th, .table td { color: #ffffff !important; }
+.table td.text-muted { color: #eaeefb !important; opacity: 1 !important; }
+
+/* Boutons : bleu lisible, contours visibles en thème sombre */
+.btn{
+  background:#1e90ff !important;
+  border:1px solid #1e90ff !important;
+  color:#ffffff !important;
+}
+.btn:hover{ filter: brightness(1.05); }
+.btn:active{ transform: translateY(1px); }
+
+/* Boutons "outline" (tes liens Ouvrir/Télécharger) en clair */
+a.btn.btn-outline, .btn.btn-outline{
+  background:transparent !important;
+  border:1px solid #9cc3ff !important;
+  color:#e6f0ff !important;
+}
+a.btn.btn-outline:hover, .btn.btn-outline:hover{
+  background: rgba(156,195,255,.12) !important;
+}
+
+/* Évite les effets "dé-saturés" sur les boutons supposés désactivés */
+.btn[disabled], .btn:disabled{
+  opacity: 1 !important;
+  filter: none !important;
+  color:#cfe1ff !important;
+  border-color:#9cc3ff !important;
+}
+
+/* Zone journal : texte bien lisible (au cas où) */
+.logbox{
+  color:#e6f0ff !important;
+  white-space: pre-wrap;      /* lisible même si lignes longues */
+  word-break: break-word;
+}
+
+
+/* ===== Tableau “État des capteurs” : texte en NOIR ===== */
+#etat-capteurs .table th,
+#etat-capteurs .table td,
+#etat-capteurs .table .badge,
+#etat-capteurs .text-muted,
+#etat-capteurs .muted,
+#etat-capteurs small {
+  color: #0b0b0b !important; /* noir */
+  opacity: 1 !important;
+}
+
+/* Conserver l’en-tête lisible si fond clair/striped */
+#etat-capteurs .table th {
+  background: rgba(255,255,255,0.85) !important;
+  border-bottom-color: rgba(0,0,0,0.06) !important;
+}
+
+/* Rayures de lignes : fond clair + texte noir */
+#etat-capteurs .table.table-striped tbody tr:nth-child(odd) {
+  background: rgba(255,255,255,0.70) !important;
+}
+#etat-capteurs .table.table-striped tbody tr:nth-child(even) {
+  background: rgba(255,255,255,0.55) !important;
+}
+
+/* Badges dans le tableau : contraste noir */
+#etat-capteurs .table .badge {
+  border-color: rgba(0,0,0,0.12) !important;
+  background: rgba(255,255,255,0.75) !important;
+  color: #0b0b0b !important;
+}
+#etat-capteurs .table .badge.ok {
+  background: #d1fae5 !important;   /* vert très clair */
+  color: #065f46 !important;         /* texte vert foncé */
+  border-color: #10b98133 !important;
+}
+#etat-capteurs .table .badge.bad {
+  background: #fee2e2 !important;   /* rouge très clair */
+  color: #991b1b !important;         /* texte rouge foncé */
+  border-color: #ef444433 !important;
+}
+/* (option) état neutre “—” si tu l’utilises */
+#etat-capteurs .table .badge.neutral {
+  background: #e5e7eb !important;   /* gris clair */
+  color: #111827 !important;
+  border-color: #9ca3af55 !important;
+}
+
+/* Petits liens/notes dans la colonne “Détails” : noir aussi */
+#etat-capteurs .table a,
+#etat-capteurs .table .text-muted a {
+  color: #0b0b0b !important;
+  text-decoration: underline;
+}
+
+
+
+/* === Contraste tableau de scan Wi‑Fi (#scanResults) === */
+#scanResults .table,
+#scanResults .table * {
+  color: #E6EDF3 !important;   /* texte lisible sur fond sombre */
+  opacity: 1 !important;       /* annule toute opacité héritée */
+  filter: none !important;     /* supprime un éventuel filtre/grisage */
+}
+
+/* En-têtes plus marquées */
+#scanResults .table thead th {
+  color: #FFFFFF !important;
+  font-weight: 600;
+  background: rgba(255,255,255,0.08) !important;
+}
+
+/* Alternance des lignes : légèrement plus soutenue */
+#scanResults .table.table-striped tbody tr:nth-child(odd)  { background: rgba(255,255,255,0.06) !important; }
+#scanResults .table.table-striped tbody tr:nth-child(even) { background: rgba(255,255,255,0.03) !important; }
+
+/* Petits textes (ex: "dBm") */
+#scanResults .table td small,
+#scanResults .table td .text-muted {
+  color: #C7D2FE !important;   /* lavande claire lisible */
+  opacity: 1 !important;
+}
+
+/* Bouton "Choisir" lisible en dark */
+#scanResults .btn.btn-outline {
+  color: #BFDBFE !important;
+  border-color: #60A5FA !important;
+  background: transparent !important;
+}
+#scanResults .btn.btn-outline:hover,
+#scanResults .btn.btn-outline:focus {
+  background: #2563EB !important;
+  color: #FFFFFF !important;
+  border-color: #2563EB !important;
+}
+
+
+/* === Scan Wi‑Fi : contraste fort en thème sombre === */
+.scan-table,
+.scan-table * {
+  color: #FFFFFF !important;   /* texte blanc net partout */
+  opacity: 1 !important;       /* annule d'éventuelles opacités héritées */
+  filter: none !important;     /* au cas où */
+}
+
+/* En‑têtes bien lisibles */
+.scan-table thead th {
+  background: rgba(0,0,0,0.45) !important;
+  color: #FFFFFF !important;
+  font-weight: 700;
+  border-bottom-color: rgba(255,255,255,0.10) !important;
+}
+
+/* Lignes alternées : on ASSOMBRIT (et non éclaircir) pour garder le contraste */
+.scan-table tbody tr:nth-child(odd)  { background: rgba(0,0,0,0.35) !important; }
+.scan-table tbody tr:nth-child(even) { background: rgba(0,0,0,0.25) !important; }
+
+/* Séparateurs plus discrets (facultatif) */
+.scan-table th, .scan-table td {
+  border-bottom-color: rgba(255,255,255,0.08) !important;
+}
+
+/* Petit texte (dBm) en lavande lisible (facultatif) */
+.scan-table td small, .scan-table td .text-muted {
+  color: #C7D2FE !important;
+}
+
+/* Bouton "Choisir" visible en dark */
+.scan-table .btn.btn-outline {
+  color: #BFDBFE !important;
+  border-color: #60A5FA !important;
+  background: transparent !important;
+}
+.scan-table .btn.btn-outline:hover,
+.scan-table .btn.btn-outline:focus {
+  background: #2563EB !important;
+  color: #FFFFFF !important;
+  border-color: #2563EB !important;
+}
+
+
+#scanResults .table th,
+#scanResults .table td {
+  color: #0b0b0b !important;   /* noir lisible sur lignes claires */
+}

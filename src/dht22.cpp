@@ -15,7 +15,7 @@ static bool g_dhtReady = false;
 
 
 // Offsets configurables
-float humidityOffset = 40.0;   // Corrige l'humidité
+float humidityOffset = 0.0;   // Corrige l'humidité
 float temperatureOffset = 0.0; // Corrige la température
 
 bool dhtStatus = false; 

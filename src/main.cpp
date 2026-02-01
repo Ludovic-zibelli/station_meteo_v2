@@ -40,6 +40,9 @@
 //Calculs
 #include "pointderosee.h"
 
+//Version
+#include "version.h"
+
 //Envoi des donnees 
 #include "api.h"
 #include "db_read.h"
@@ -127,7 +130,25 @@ void sendWithCache(const String& path) {
 }
 
 //Variable fonctionement programme
-int compteur;
+
+// Compteur runtime (monotone), persistant via NVS
+static uint32_t compteur = 0;
+
+#include <Preferences.h>
+static Preferences prefsCtr;
+
+static void loadCounterFromNvs() {
+  prefsCtr.begin("ctr", /*ro=*/true);
+  compteur = prefsCtr.getULong("val", 0);
+  prefsCtr.end();
+}
+
+static void saveCounterToNvs() {
+  prefsCtr.begin("ctr", /*rw=*/false);
+  prefsCtr.putULong("val", compteur);
+  prefsCtr.end();
+}
+
 int activation_envoi_api = 0; //1 = envoi des données à l'API activé, 0 = désactivé
 
 //variable donnees capteurs
@@ -202,14 +223,98 @@ constexpr unsigned long UPDATE_PERIOD_MS = 30000;
 
 // Helpers wrap-safe
 static inline bool timeReached(unsigned long now, unsigned long dueAt) {
-  return (long)(now - dueAt) >= 0;  // wrap-safe
+  return (long)(now - dueAt) >= 0; // wrap-safe
 }
+
 static inline void reschedStable(unsigned long &dueAt, unsigned long period) {
-  dueAt += period;                           // période additionnelle -> régulier
+  dueAt += period; // période additionnelle -> régulier
   // Si on est déjà en retard (ex: bloc long), rattrape proprement
   while (timeReached(millis(), dueAt)) {
     dueAt += period;
   }
+}
+
+// Pousse dueAt par multiples de 'period' jusqu'à repasser dans le futur (wrap-safe)
+static inline void reschedForwardToFuture(unsigned long &dueAt, unsigned long period) {
+  unsigned long now = millis();
+  while ((long)(now - dueAt) >= 0) {  // tant qu'échu ou en retard
+    dueAt += period;                  // avance par pas stables
+  }
+}
+
+
+// --- Offsets capteurs (appliqués aux valeurs lues) ---
+struct Offsets {
+  float t_bmp   = 0.0f;  // °C  (BMP280)
+  float t_dht   = 0.0f;  // °C  (DHT22)
+  float h_dht   = 0.0f;  // %   (DHT22)
+  float press   = 0.0f;  // hPa (BMP280)
+  float wind    = 0.0f;  // km/h (anémomètre: offset additif)
+  float t_sht40 = 0.0f;  // °C  (SHT40 si utilisé)
+};
+static Offsets ofs;
+static Preferences prefsOfs;  // NVS: namespace "ofs"
+
+static void loadOffsetsFromNvs() {
+  prefsOfs.begin("ofs", /*ro=*/true);
+  ofs.t_bmp   = prefsOfs.getFloat("t_bmp",   0.0f);
+  ofs.t_dht   = prefsOfs.getFloat("t_dht",   0.0f);
+  ofs.h_dht   = prefsOfs.getFloat("h_dht",   0.0f);
+  ofs.press   = prefsOfs.getFloat("press",   0.0f);
+  ofs.wind    = prefsOfs.getFloat("wind",    0.0f);
+  ofs.t_sht40 = prefsOfs.getFloat("t_sht40", 0.0f);
+  prefsOfs.end();
+}
+static void saveOffsetsToNvs(const Offsets& o) {
+  prefsOfs.begin("ofs", /*rw=*/false);
+  prefsOfs.putFloat("t_bmp",   o.t_bmp);
+  prefsOfs.putFloat("t_dht",   o.t_dht);
+  prefsOfs.putFloat("h_dht",   o.h_dht);
+  prefsOfs.putFloat("press",   o.press);
+  prefsOfs.putFloat("wind",    o.wind);
+  prefsOfs.putFloat("t_sht40", o.t_sht40);
+  prefsOfs.end();
+}
+
+
+StationSnapshot g_snap;
+
+
+// NVS pour modules + activation API
+static Preferences prefsMods;
+
+// Sauvegarde des modules + activation API (NVS)
+static void saveModulesToNvs(const Modules& m, int api_active) {
+  prefsMods.begin("modules", /*rw=*/false);
+  prefsMods.putInt("bmp280", m.bmp280);
+  prefsMods.putInt("dht22",  m.dht22);
+  prefsMods.putInt("sht40",  m.sht40);
+  prefsMods.putInt("anemo",  m.anemo);
+  prefsMods.putInt("girou",  m.girou);
+  prefsMods.putInt("pluvio", m.pluvio);
+  prefsMods.putInt("tension",m.tension);
+  prefsMods.putInt("bitvie", m.bitvie);
+  prefsMods.putInt("api",    api_active);
+  prefsMods.putUChar("ver",  1);  // petite “version” de schéma NVS
+  prefsMods.end();
+}
+
+// Chargement des modules + activation API (NVS)
+// Retourne true si données présentes, false sinon
+static bool loadModulesFromNvs(Modules& m, int& api_active) {
+  prefsMods.begin("modules", /*ro=*/true);
+  bool ok = prefsMods.isKey("ver");
+  m.bmp280 = prefsMods.getInt("bmp280", 1);
+  m.dht22  = prefsMods.getInt("dht22",  1);
+  m.sht40  = prefsMods.getInt("sht40",  0);
+  m.anemo  = prefsMods.getInt("anemo",  1);
+  m.girou  = prefsMods.getInt("girou",  1);
+  m.pluvio = prefsMods.getInt("pluvio", 1);
+  m.tension= prefsMods.getInt("tension",1);
+  m.bitvie = prefsMods.getInt("bitvie", 1);
+  api_active = prefsMods.getInt("api",  0);
+  prefsMods.end();
+  return ok;
 }
 
 //Variable date heure
@@ -286,6 +391,13 @@ static uint16_t lastDoySeen = 65535;       // si tu veux aussi semaine glissante
 
 
 
+// Nom cardinal simple (8 directions) depuis un angle 0..359, -1 => "—"
+static const char* degToCardinal(int deg) {
+  if (deg < 0) return "—";
+  static const char* names[8] = {"N","NE","E","SE","S","SW","W","NW"};
+  return names[((deg + 22) / 45) & 7];
+}
+
 static inline float windAvg10min() {
   uint16_t n = g_windFilled ? WIND_BUF_SECS : g_windIdx;
   if (n == 0) return 0.0f;
@@ -321,7 +433,6 @@ static void addIntOrNull(String& json, const char* key, int v) {
   if (v < 0) json += "null";
   else       json += String(v);
 }
-
 
 
 // Arrondir à 2 décimales (préserver NaN)
@@ -462,7 +573,6 @@ void handleCalibrationButton() {
 }
 
 
-
 void handleRoot() {
   File file = SPIFFS.open("/index.html", "r");
   if (file) {
@@ -505,143 +615,217 @@ static inline void dbUnlock() {
 
 
 
-
-
 void handleData() {
-  // Pendant OTA, on évite l'accès à la DB
-  if (otaInProgress) {
-    server.send(503, "application/json", "{\"error\":\"OTA in progress\"}");
-    return;
-  }
+  if (otaInProgress) { server.send(503, "application/json", "{\"error\":\"OTA in progress\"}"); return; }
 
   String json = "{";
-  sqlite3_stmt* stmt = nullptr;
+  // Mesures courantes (depuis le snapshot RAM)
+  json += "\"temperature\":"   + String(g_snap.temp_dht, 2) + ",";
+  json += "\"humidite\":"      + String(g_snap.hum, 2) + ",";
+  json += "\"pression\":"      + String(g_snap.press_hPa, 2) + ",";
+  json += "\"tempbmp280\":"    + String(g_snap.temp_bmp, 2) + ",";
 
-  // ---------- station_direct (id=1) ----------
-  if (!dbLock(300)) {
-    server.send(503, "application/json", "{\"error\":\"db busy\"}");
-    return;
-  }
+  json += "\"datetime\":\""    + String(g_snap.datetime) + "\",";
+  json += "\"tpsvie\":" + String((unsigned long)(millis() / 1000UL)) + ",";
+  json += "\"pointderosee\":"  + String(g_snap.dew, 2) + ",";
 
-  const char* sql1 =
-    "SELECT tempdht22, humiditer, pression, tempbmp280, "
-    "timestamp, tpsvie, pointderosee, "
-    "anemometre, girouette, pluviometre, rafale "
-    "FROM station_direct WHERE id=1;";   // ✅ lit la ligne mise à jour par UPDATE
+  json += "\"anemometre\":"    + String(g_snap.wind, 2) + ",";
+  json += "\"pluviometre\":"   + String(g_snap.rain_cum, 2) + ",";
+  json += "\"rafale\":"        + String(g_snap.gust, 2);
 
-  if (sqlite3_prepare_v2(db, sql1, -1, &stmt, NULL) == SQLITE_OK) {
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-      float temp         = round2f(sqlite3_column_double(stmt, 0));
-      float hum          = round2f(sqlite3_column_double(stmt, 1));
-      float press        = round2f(sqlite3_column_double(stmt, 2));
-      float temp280      = round2f(sqlite3_column_double(stmt, 3));
-      String ts          = (const char*)sqlite3_column_text(stmt, 4);
-      float tpsvie       = round2f(sqlite3_column_double(stmt, 5));
-      float pointderosee = round2f(sqlite3_column_double(stmt, 6));
-      float anemometre   = round2f(sqlite3_column_double(stmt, 7));
-      float dir_db       = round2f(sqlite3_column_double(stmt, 8));
-      float pluviometre  = round2f(sqlite3_column_double(stmt, 9));
-      float rafale       = round2f(sqlite3_column_double(stmt, 10));
+  // UI calculés côté RAM
+  json += ",\"moyenne10min\":" + String(windAvg10min(), 2);
+  json += ",\"direction\":"    + String(max(0, g_snap.dir_deg)) + ",";
+  json += "\"pluieHeure\":"    + String(rainHourMm(), 2) + ",";
+  json += "\"pluieJour\":"     + String(rainDayMm(), 2) + ",";
+  json += "\"pluieSemaine\":"  + String(rainWeekMm(), 2);
 
-      auto isValidDeg = [](float d) {
-        return !isnan(d) && d >= 0.0f && d < 360.0f;
-      };
-      extern int degret;
-      float directionFinale = isValidDeg((float)degret) ? (float)degret
-                             : (isValidDeg(dir_db)       ? dir_db : 0.0f);
+  // Wi‑Fi
+  int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
+  int pct  = rssiToPercent(rssi);
+  int bars = pctToBars(pct);
+  json += ",\"wifi_rssi\":" + String(rssi);
+  json += ",\"wifi_percent\":" + String(pct);
+  json += ",\"wifi_bars\":" + String(bars);
+  json += ",\"compteur\":" + String((unsigned long)compteur);
 
-      // Corps JSON principal
-      json += "\"temperature\":"  + String(temp, 2) + ",";
-      json += "\"humidite\":"     + String(hum, 2) + ",";
-      json += "\"pression\":"     + String(press, 2) + ",";
-      json += "\"tempbmp280\":"   + String(temp280, 2) + ",";
-      json += "\"datetime\":\""   + ts + "\",";
-      json += "\"tpsvie\":"       + String(tpsvie, 2) + ",";
-      json += "\"pointderosee\":" + String(pointderosee, 2) + ",";
-      json += "\"anemometre\":"   + String(anemometre, 2) + ",";
-      json += "\"pluviometre\":"  + String(pluviometre, 2) + ",";
-      json += "\"rafale\":"       + String(rafale, 2);
+  // Min/Max jour + All‑time (structures existantes)
+  addNum(json, "t_min_day", ST_tempExt.minDay, 1);
+  addNum(json, "t_max_day", ST_tempExt.maxDay, 1);
+  addNum(json, "t_min_all", ST_tempExt.minAll, 1);
+  addNum(json, "t_max_all", ST_tempExt.maxAll, 1);
 
-      // Ajouts UI (RAM)
-      json += ",\"moyenne10min\":" + String(windAvg10min(), 2);
-      json += ",\"direction\":"    + String(directionFinale, 0);
-      json += ",\"pluieHeure\":"   + String(rainHourMm(), 2);
-      json += ",\"pluieJour\":"    + String(rainDayMm(), 2);
-      json += ",\"pluieSemaine\":" + String(rainWeekMm(), 2);
+  addNum(json, "h_min_day", ST_humExt.minDay, 0);
+  addNum(json, "h_max_day", ST_humExt.maxDay, 0);
+  addNum(json, "h_min_all", ST_humExt.minAll, 0);
+  addNum(json, "h_max_all", ST_humExt.maxAll, 0);
 
-      // Wi‑Fi
-      int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
-      int pct  = rssiToPercent(rssi);
-      int bars = pctToBars(pct);
-      json += ",\"wifi_rssi\":"    + String(rssi);
-      json += ",\"wifi_percent\":" + String(pct);
-      json += ",\"wifi_bars\":"    + String(bars);
+  addNum(json, "p_min_day", ST_press.minDay, 1);
+  addNum(json, "p_max_day", ST_press.maxDay, 1);
+  addNum(json, "p_min_all", ST_press.minAll, 1);
+  addNum(json, "p_max_all", ST_press.maxAll, 1);
 
-      // Min/Max JOUR + All-time
-      addNum(json, "t_min_day", ST_tempExt.minDay, 1);
-      addNum(json, "t_max_day", ST_tempExt.maxDay, 1);
-      addNum(json, "t_min_all", ST_tempExt.minAll, 1);
-      addNum(json, "t_max_all", ST_tempExt.maxAll, 1);
+  addNum(json, "vb_min_day", ST_batt.minDay, 2);
+  addNum(json, "vb_max_day", ST_batt.maxDay, 2);
+  addNum(json, "vb_min_all", ST_batt.minAll, 2);
+  addNum(json, "vb_max_all", ST_batt.maxAll, 2);
 
-      addNum(json, "h_min_day", ST_humExt.minDay, 0);
-      addNum(json, "h_max_day", ST_humExt.maxDay, 0);
-      addNum(json, "h_min_all", ST_humExt.minAll, 0);
-      addNum(json, "h_max_all", ST_humExt.maxAll, 0);
+  addNum(json, "vs_min_day", ST_solar.minDay, 2);
+  addNum(json, "vs_max_day", ST_solar.maxDay, 2);
+  addNum(json, "vs_min_all", ST_solar.minAll, 2);
+  addNum(json, "vs_max_all", ST_solar.maxAll, 2);
 
-      addNum(json, "p_min_day", ST_press.minDay, 1);
-      addNum(json, "p_max_day", ST_press.maxDay, 1);
-      addNum(json, "p_min_all", ST_press.minAll, 1);
-      addNum(json, "p_max_all", ST_press.maxAll, 1);
+  // Rafales + directions
+  addNum(json, "gust_max_day", GUST_maxDay, 1);
+  addIntOrNull(json, "gust_dir_day", GUST_dirDay);
+  addNum(json, "gust_max_all", GUST_maxAll, 1);
+  addIntOrNull(json, "gust_dir_all", GUST_dirAll);
 
-      addNum(json, "vb_min_day", ST_batt.minDay, 2);
-      addNum(json, "vb_max_day", ST_batt.maxDay, 2);
-      addNum(json, "vb_min_all", ST_batt.minAll, 2);
-      addNum(json, "vb_max_all", ST_batt.maxAll, 2);
-
-      addNum(json, "vs_min_day", ST_solar.minDay, 2);
-      addNum(json, "vs_max_day", ST_solar.maxDay, 2);
-      addNum(json, "vs_min_all", ST_solar.minAll, 2);
-      addNum(json, "vs_max_all", ST_solar.maxAll, 2);
-
-      // Rafales + directions
-      addNum(json, "gust_max_day", GUST_maxDay, 1);
-      addIntOrNull(json, "gust_dir_day", GUST_dirDay);
-      addNum(json, "gust_max_all", GUST_maxAll, 1);
-      addIntOrNull(json, "gust_dir_all", GUST_dirAll);
-    }
-  }
-  sqlite3_finalize(stmt);
-  dbUnlock();  // 🔓
-
-  // ---------- tensions (id=1) ----------
-  if (!dbLock(300)) {
-    // On ne casse pas l'ensemble : on répond tout de même le JSON sans tensions
-    // (ou renvoyer 503 si tu veux strict)
-    json += ",\"tension_batterie\":null,\"tension_solaire\":null";
-  } else {
-    const char* sql2 =
-      "SELECT tension_batterie, tension_solaire "
-      "FROM tensions WHERE id=1;";     // ✅ lit la ligne mise à jour par UPDATE
-
-    if (sqlite3_prepare_v2(db, sql2, -1, &stmt, NULL) == SQLITE_OK) {
-      if (sqlite3_step(stmt) == SQLITE_ROW) {
-        float vb = round2f(sqlite3_column_double(stmt, 0));
-        float vs = round2f(sqlite3_column_double(stmt, 1));
-        if (!json.endsWith("{")) json += ",";
-        json += "\"tension_batterie\":" + String(vb) + ",";
-        json += "\"tension_solaire\":"  + String(vs);
-      }
-    }
-    sqlite3_finalize(stmt);
-    dbUnlock();  // 🔓
-  }
-
-  // Fermeture propre
-  if (json.endsWith(",")) json.remove(json.length() - 1);
   json += "}";
   server.send(200, "application/json", json);
 }
 
+
+// --- Gestion Wi‑Fi STA + AP sécurisé WPA2 ---
+
+// Etat STA non-bloquant
+static bool g_staConnected = false;
+static unsigned long g_nextReconnectMs = 0;
+static uint32_t g_backoffMs = 2000;   // 2s -> 4s -> 8s ... max 60s
+
+// NVS pour authentification & AP
+static Preferences prefsAuth; // namespace "auth"
+static Preferences prefsAp;   // namespace "ap"
+
+// Config Auth/AP en RAM
+struct AuthConfig {
+  String viewerUser = "viewer";
+  String viewerPass = "";   // généré au premier boot si vide
+  String adminUser  = "admin";
+  String adminPass  = "";   // généré au premier boot si vide
+};
+
+struct ApConfig {
+  String ssid = "METEOSPIT";
+  String pass = "";         // généré au premier boot si vide (>=12 chars)
+  uint8_t channel = 1;
+  uint8_t maxConn = 2;      // écran + smartphone
+};
+
+static AuthConfig g_auth;
+static ApConfig   g_ap;
+
+// Petit utilitaire de génération aléatoire (A..Z a..z 0..9)
+static String makeRandomString(size_t len) {
+  const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  size_t n = sizeof(alphabet) - 1;
+  String s; s.reserve(len);
+  for (size_t i=0; i<len; ++i) {
+    uint32_t r = esp_random();
+    s += alphabet[r % n];
+  }
+  return s;
+}
+
+// Chargement NVS Auth
+
+
+static void loadAuthFromNvs() {
+  prefsAuth.begin("auth", /*ro=*/true);
+  g_auth.viewerUser = prefsAuth.getString("viewer_user", "viewer");
+  g_auth.viewerPass = prefsAuth.getString("viewer_pass", "");    // si vide -> on mettra défaut
+  g_auth.adminUser  = prefsAuth.getString("admin_user",  "admin");
+  g_auth.adminPass  = prefsAuth.getString("admin_pass",  "");
+  prefsAuth.end();
+
+  // ➜ Normalisation : si vide ou trop court, on prend les valeurs par défaut Option A
+  if (g_auth.viewerUser.isEmpty()) g_auth.viewerUser = "viewer";
+  if (g_auth.viewerPass.length() < 4) g_auth.viewerPass = "meteoviewer";
+  if (g_auth.adminUser.isEmpty())  g_auth.adminUser  = "admin";
+  if (g_auth.adminPass.length()  < 6) g_auth.adminPass  = "meteoadmin";
+
+  // ⬇️ Log d’info (masqué) pour vérifier rapidement sur le port série
+
+  app_logf("[Auth] viewer=%s / %u chars, admin=%s / %u chars",
+    g_auth.viewerUser.c_str(), (unsigned)g_auth.viewerPass.length(),
+    g_auth.adminUser.c_str(),  (unsigned)g_auth.adminPass.length());
+
+}
+
+static void loadApFromNvs() {
+  prefsAp.begin("ap", /*ro=*/true);
+  g_ap.ssid    = prefsAp.getString("ssid", "METEOSPIT");
+  g_ap.pass    = prefsAp.getString("pass", "");    // si vide -> défaut
+  g_ap.channel = prefsAp.getUChar("chan", 1);
+  g_ap.maxConn = prefsAp.getUChar("maxc", 2);
+  prefsAp.end();
+
+  // ➜ Normalisation : si mot de passe AP trop court, on met celui de l’option A
+  if (g_ap.ssid.isEmpty()) g_ap.ssid = "METEOSPIT";
+  if (g_ap.pass.length() < 8) g_ap.pass = "meteospit-setup";
+  if (g_ap.channel < 1 || g_ap.channel > 13) g_ap.channel = 1;
+  if (g_ap.maxConn == 0 || g_ap.maxConn > 4) g_ap.maxConn = 2;
+
+  Serial.printf("[AP] SSID='%s' pass=%u chars, ch=%u, max=%u\n",
+    g_ap.ssid.c_str(), (unsigned)g_ap.pass.length(), g_ap.channel, g_ap.maxConn);
+}
+
+// Démarrage AP local sécurisé WPA2, IP fixe 192.168.4.1
+static void startLocalAP() {
+  IPAddress apIP(192,168,4,1), apGW(192,168,4,1), apMask(255,255,255,0);
+  WiFi.softAPConfig(apIP, apGW, apMask);
+  WiFi.softAP(g_ap.ssid.c_str(), g_ap.pass.c_str(), g_ap.channel, /*hidden=*/false, g_ap.maxConn);
+  app_logf("[AP] ssid=%s pass_len=%u, ch=%u, max=%u",
+    g_ap.ssid.c_str(), (unsigned)g_ap.pass.length(), g_ap.channel, g_ap.maxConn);
+
+}
+
+// Gestionnaire d’événements Wi‑Fi STA (non bloquant)
+static void onWiFiEvent(WiFiEvent_t event) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      g_staConnected = true;
+      g_backoffMs = 2000;
+      Serial.printf("[WiFi] STA GOT IP: %s (ch=%d)\n",
+                    WiFi.localIP().toString().c_str(), WiFi.channel());
+      break;
+
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      g_staConnected = false;
+      Serial.println("[WiFi] STA DISCONNECTED");
+      g_nextReconnectMs = millis() + g_backoffMs;
+      g_backoffMs = std::min<uint32_t>(g_backoffMs * 2, 60000);
+      break;
+    default: break;
+  }
+}
+
+// Lancer la connexion STA depuis la DB (sans bloquer)
+static void startStaFromDB() {
+  AppConfig cfg;
+  if (!readAppConfig(cfg)) {
+    Serial.println("✖ Lecture config Wi‑Fi échouée (DB).");
+    return;
+  }
+  WiFi.begin(cfg.ssid_wifi.c_str(), cfg.pass_wifi.c_str());
+  Serial.printf("[WiFi] STA connect to SSID '%s' (non bloquant)\n", cfg.ssid_wifi.c_str());
+}
+
+// Helpers Auth HTTP
+static bool requireViewerAuth() {
+  if (!server.authenticate(g_auth.viewerUser.c_str(), g_auth.viewerPass.c_str())) {
+    server.requestAuthentication(); // 401
+    return false;
+  }
+  return true;
+}
+static bool requireAdminAuth() {
+  if (!server.authenticate(g_auth.adminUser.c_str(), g_auth.adminPass.c_str())) {
+    server.requestAuthentication();
+    return false;
+  }
+  return true;
+}
 
 
 void connectWifiFromDB() {
@@ -673,57 +857,31 @@ void connectWifiFromDB() {
 #include <ArduinoJson.h>
 
 void handleEtatCapteurs() {
-  // DbLock _; // (facultatif, prépare Async)  // Supprimé car non défini
   StaticJsonDocument<512> doc;
+
+  // États capteurs en RAM (tes flags et valeurs courantes)
   JsonObject etat = doc.createNestedObject("etat");
+  etat["dht22"]            = etat_dht22;
+  etat["bmp280"]           = etat_bmp280;
+  etat["pluvio"]           = etat_pluvio;
+  etat["girou"]            = etat_girou;
+  etat["anemo"]            = etat_anemo;
+  etat["tension_solaire"]  = g_snap.solar_v;  // <-- RAM, plus DB
+  etat["tension_batterie"] = g_snap.batt_v;   // <-- RAM, plus DB
+
+  // Modules (source: runtime/NVS)
   JsonObject modules = doc.createNestedObject("modules");
+  modules["bmp280"]  = module_bmp280;
+  modules["dht22"]   = module_dht22;
+  modules["sht40"]   = module_sht40;
+  modules["anemo"]   = module_anemo;
+  modules["girou"]   = module_girou;
+  modules["pluvio"]  = module_pluvio;
+  modules["tension"] = module_tension;
+  modules["bitvie"]  = module_bitvie;
+  modules["api"]     = activation_envoi_api;  // 1/0
 
-  // etatcapteurs (etat)
-  sqlite3_stmt* stmt=nullptr;
-  const char* sql1 =
-    "SELECT capteur_dht22, capteur_bmp280, capteur_pluvio, capteur_girou, "
-    "capteur_anemo, tension_solaire, tension_batterie FROM etatcapteurs WHERE id=1;";
-  if (sqlite3_prepare_v2(db, sql1, -1, &stmt, NULL) == SQLITE_OK &&
-      sqlite3_step(stmt) == SQLITE_ROW) {
-    etat["dht22"]            = sqlite3_column_int(stmt,0);
-    etat["bmp280"]           = sqlite3_column_int(stmt,1);
-    etat["pluvio"]           = sqlite3_column_int(stmt,2);
-    etat["girou"]            = sqlite3_column_int(stmt,3);
-    etat["anemo"]            = sqlite3_column_int(stmt,4);
-    etat["tension_solaire"]  = sqlite3_column_double(stmt,5);
-    etat["tension_batterie"] = sqlite3_column_double(stmt,6);
-  }
-  sqlite3_finalize(stmt);
-
-
-  // etatcapteurs (modules)
-  const char* sql2 =
-    "SELECT module_bmp280, module_dht22, module_anemo, module_girou, "
-    "module_pluvio, module_tension, module_bitvie, module_sht40 "  // <-- + module_sht40
-    "FROM etatcapteurs WHERE id=1;";
-  if (sqlite3_prepare_v2(db, sql2, -1, &stmt, NULL) == SQLITE_OK &&
-      sqlite3_step(stmt) == SQLITE_ROW) {
-    modules["bmp280"]  = sqlite3_column_int(stmt,0);
-    modules["dht22"]   = sqlite3_column_int(stmt,1);
-    modules["anemo"]   = sqlite3_column_int(stmt,2);
-    modules["girou"]   = sqlite3_column_int(stmt,3);
-    modules["pluvio"]  = sqlite3_column_int(stmt,4);
-    modules["tension"] = sqlite3_column_int(stmt,5);
-    modules["bitvie"]  = sqlite3_column_int(stmt,6);
-    modules["sht40"]   = sqlite3_column_int(stmt,7);   // <-- nouveau
-  }
-  sqlite3_finalize(stmt);
-
-  // + Ajouter l'état d'activation de l'API dans la réponse JSON
-  int api_active_flag = 0;
-  if (readActivationApi(api_active_flag)) {           // déjà dispo
-    modules["api"] = api_active_flag;                 // 1 = activée, 0 = désactivée
-  } else {
-    modules["api"] = 0;
-}
-
-
-  String out; out.reserve(256);
+  String out;
   serializeJson(doc, out);
   server.send(200, "application/json", out);
 }
@@ -801,9 +959,9 @@ void handleStatusJson() {
   st["rain"]   = etat_pluvio;
 
   // 3) Valeurs courantes (déjà lues dans loop())
-  JsonObject jb = j.createNestedObject("bmp280"); jb["temp"]  = temp1;       jb["press"] = pression;
-  JsonObject jd = j.createNestedObject("dht22");  jd["temp"]  = temp2;       jd["hum"]   = humiditer;
-  JsonObject ja = j.createNestedObject("anemo");  ja["speed"] = vitesse;     ja["gust"]  = rafale;
+  JsonObject jb = j.createNestedObject("bmp280"); jb["temp"] = g_snap.temp_bmp; jb["press"] = g_snap.press_hPa;
+  JsonObject jd = j.createNestedObject("dht22");  jd["temp"]  = g_snap.temp_dht; jd["hum"]   = g_snap.hum;
+  JsonObject ja = j.createNestedObject("anemo");  ja["speed"] = g_snap.wind;     ja["gust"]  = g_snap.gust;
   JsonObject jv = j.createNestedObject("vane");   jv["deg"]   = degret;      jv["card"]  = "—"; // si tu as un libellé (N, NE...)
   JsonObject jr = j.createNestedObject("rain");   jr["mm"]    = quantite;
   JsonObject jvolt = j.createNestedObject("volt"); jvolt["solar"] = tension_solaire; jvolt["batt"] = tension_batterie;
@@ -818,7 +976,7 @@ void handleStatusJson() {
   jc["adc_batt"]    = 34;
   jc["api_url"]     = cfg.adresse_api;
   jc["api_token"]   = cfg.token;
-  jc["api_enabled"] = (cfg.activation_envoi_api != 0);
+  jc["api_enabled"] = (activation_envoi_api != 0);
   jc["ntp_server"]  = g_ntp_server;
   jc["timezone"]    = g_timezone;
 
@@ -880,8 +1038,6 @@ void resetDailyStatsAtMidnightIfNeeded(const DateTime& now) {
     Serial.println("[Daily] Reset des min/max du jour à minuit.");
   }
 }
-
-
 
 // --- Charger les records “all-time” au boot ---
 void loadAllTimeRecords() {
@@ -946,7 +1102,6 @@ void saveAllTimeRecordsIfDirty() {
 }
 
 
-
 // --- Nouvelle fonction utilitaire ---
 // Met à jour la stat et marque 'dirty' si min/max ALL-TIME ont changé
 inline void updateStat(StatScalar& s, float v, time_t now) {
@@ -966,7 +1121,12 @@ static inline void sendNoCacheHeaders(WebServer& srv) {
   srv.sendHeader("Pragma", "no-cache");
 }
 
-
+// Réinitialisation NVS Auth/AP aux valeurs par défaut (pour debug)
+//static void resetAuthApToDefaults() {
+//  prefsAuth.begin("auth", /*rw=*/false); prefsAuth.clear(); prefsAuth.end();
+//  prefsAp.begin("ap",     /*rw=*/false); prefsAp.clear();   prefsAp.end();
+//  Serial.println("[Auth/AP] NVS cleared. Reboot to reapply defaults.");
+//}
 
 
 
@@ -974,10 +1134,7 @@ void setup() {
  
   Serial.begin(115200);
   
-  
-  // Mode AP pour configuration 
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP("meteospit_Config", "12345678"); // SSID et mot de pas
+  //resetAuthApToDefaults();
 
   //Connection au wifi 
   if (!SPIFFS.begin(true)) {
@@ -986,10 +1143,15 @@ void setup() {
   }
 
   
+  
   log_init("/log.txt", 100);               // fichier + limite
   log_set_flush_period(60000);             // 60 s
-  app_logf("Boot station");                // première ligne
+  app_logf("Boot station");        
+  // Charger le compteur persistant
+  loadCounterFromNvs();
+  Serial.printf("[CTR] compteur (boot) = %lu\n", (unsigned long)compteur);
 
+  // première ligne
 
   unsigned long nowMs = millis();
   // ⚡ Pour tester rapidement : première mise à jour DB dans ~2 s
@@ -1006,9 +1168,8 @@ void setup() {
   nextDueRow  += random(100, 400);
   nextDueEtat += random(100, 400);
 
-
-
-  nextUpdateMs = millis() + UPDATE_PERIOD_MS;     // 1re mise à jour dans 30 s
+  
+  //nextUpdateMs = millis() + UPDATE_PERIOD_MS;     // 1re mise à jour dans 30 s
   // --- NVS Records ---
   prefs.begin("records", false);   // namespace "records"
   loadAllTimeRecords();            // charge min/max absolus depuis NVS
@@ -1034,15 +1195,19 @@ void setup() {
     app_logf("DB ok");
   }
   apiRefreshConfigFromDb();   // charge API_URL, API_KEY, STATION_ID, etc.
-  /*
-  int rc = sqlite3_open("/spiffs/station.db", &db);
-  if (rc != SQLITE_OK) {
-    Serial.print("Erreur ouverture base de données : ");
-    Serial.println(sqlite3_errmsg(db));
-  } else {
-    Serial.println("Base de données ouverte avec succès !");
+
+
+  
+  if (!fileLooksLikeSQLite() || !dbIntegrityCheck()) {
+    app_logf("[DB] invalid on boot -> recreate");
+    if (recreateDatabaseFile()) {
+      app_logf("[DB] recreate OK");
+      apiRefreshConfigFromDb();   // ✅ recharger les champs (URL, token, station, etc.)
+    } else {
+      app_logf("[DB] recreate FAILED");
+    }
   }
-  */
+
   Wire.begin();
   
   // --- Time/NTP au boot ---
@@ -1055,8 +1220,6 @@ void setup() {
     //while (1);
   }
   
-  // Pour régler l'heure une fois :
-  //rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 
     // Initialisation du capteur BMP280
   if (!initBMP280()) 
@@ -1119,8 +1282,59 @@ void setup() {
   Serial.println(F("[System] Init OK. Maintiens le bouton 1.5 s pour calibrer le Nord."));
      
 
-  connectWifiFromDB(); 
+  
+  // --- Wi‑Fi AP+STA avec NVS & non-bloquant ---
+  WiFi.persistent(false);
+  WiFi.onEvent(onWiFiEvent);
+  WiFi.mode(WIFI_AP_STA);
 
+  // Charger secrets (NVS) et démarrer l’AP local pour l’écran/admin
+  loadApFromNvs();
+  loadAuthFromNvs();
+  startLocalAP();
+
+  // Lancer la connexion STA (réseau maison) sans bloquer
+  startStaFromDB();
+
+  // Option conso/perf (au choix) :
+  WiFi.setSleep(false); // perf réseau (écran 30 s OK) ; passer true si tu veux économiser
+
+  
+// --- Modules + activation API : préférer NVS, fallback unique DB ---
+{
+  Modules bootMods{};
+  int apiActive = 0;
+
+  bool haveNvs = loadModulesFromNvs(bootMods, apiActive);
+  if (!haveNvs) {
+    // Fallback : lire une fois la DB (si présente), puis ensemencer la NVS
+    if (!loadModulesFromDB(bootMods)) {
+      // default raisonnables si DB absente/HS
+      bootMods = Modules{ /*bmp280*/1, /*dht22*/1, /*sht40*/0, /*anemo*/1,
+                          /*girou*/1, /*pluvio*/1, /*tension*/1, /*bitvie*/1 };
+    }
+    int a = 0; if (!readActivationApi(a)) a = 0;
+    apiActive = a;
+    saveModulesToNvs(bootMods, apiActive);
+  }
+
+  // Appliquer la config au runtime
+  applyModuleChange(mods, bootMods);
+  mods = bootMods;
+
+  module_bmp280 = bootMods.bmp280;
+  module_dht22  = bootMods.dht22;
+  module_sht40  = bootMods.sht40;
+  module_anemo  = bootMods.anemo;
+  module_girou  = bootMods.girou;
+  module_pluvio = bootMods.pluvio;
+  module_tension= bootMods.tension;
+  module_bitvie = bootMods.bitvie;
+
+  activation_envoi_api = apiActive;
+}
+
+loadOffsetsFromNvs();
 // --- ROUTES HTTP (à mettre DANS setup(), après connectWifiFromDB(), avant server.begin()) ---
 // Routes de base
 server.on("/", handleRoot);
@@ -1129,10 +1343,137 @@ server.on("/settime", handleSetTime);
 server.on("/etatcapteurs", HTTP_GET, handleEtatCapteurs);
 server.on("/status.json", HTTP_GET, handleStatusJson);
 
-server.on("/config", HTTP_GET, [](){
+
+// Protéger la page config
+server.on("/config", HTTP_GET, []() {
+  if (!requireAdminAuth()) return;
   File file = SPIFFS.open("/config.html", "r");
   if (file) { server.streamFile(file, "text/html"); file.close(); }
-  else { server.send(404, "text/plain", "Page config introuvable"); }
+  else      { server.send(404, "text/plain", "Page config introuvable"); }
+});
+
+// Exemple : protéger aussi les postes existants si tu veux
+// server.on("/config.save", HTTP_POST, { if(!requireAdminAuth()) return; ... });
+
+
+// Lire la config Auth/AP (masquée) pour l'UI
+server.on("/config/auth", HTTP_GET, []() {
+  if (!requireAdminAuth()) return;
+
+  StaticJsonDocument<512> j;
+  JsonObject auth = j.createNestedObject("auth");
+  auth["viewer_user"] = g_auth.viewerUser;
+  
+  // Créer des chaînes de masquage
+  String viewerPassMask;
+  for (size_t i = 0; i < g_auth.viewerPass.length(); i++) viewerPassMask += '*';
+  auth["viewer_pass"] = viewerPassMask;
+  
+  auth["admin_user"]  = g_auth.adminUser;
+  String adminPassMask;
+  for (size_t i = 0; i < g_auth.adminPass.length(); i++) adminPassMask += '*';
+  auth["admin_pass"] = adminPassMask;
+
+  JsonObject ap = j.createNestedObject("ap");
+  ap["ssid"] = g_ap.ssid;
+  String apPassMask;
+  for (size_t i = 0; i < g_ap.pass.length(); i++) apPassMask += '*';
+  ap["pass"] = apPassMask;
+  ap["chan"] = g_ap.channel;
+  ap["maxc"] = g_ap.maxConn;
+
+  String out; serializeJson(j, out);
+  server.send(200, "application/json", out);
+});
+
+// Sauver (partiel) Auth/AP et redémarrer AP si besoin
+server.on("/config/auth.save", HTTP_POST, []() {
+  if (!requireAdminAuth()) return;
+
+  bool apChanged = false, authChanged = false;
+
+  // Auth viewer/admin
+  String viewer_user = server.arg("viewer_user");
+  String viewer_pass = server.arg("viewer_pass");
+  String admin_user  = server.arg("admin_user");
+  String admin_pass  = server.arg("admin_pass");
+
+  if (viewer_user.length()) { g_auth.viewerUser = viewer_user; authChanged = true; }
+  if (viewer_pass.length()) { g_auth.viewerPass = viewer_pass; authChanged = true; }
+  if (admin_user.length())  { g_auth.adminUser  = admin_user;  authChanged = true; }
+  if (admin_pass.length())  { g_auth.adminPass  = admin_pass;  authChanged = true; }
+
+  if (authChanged) {
+    prefsAuth.begin("auth", /*rw=*/false);
+    prefsAuth.putString("viewer_user", g_auth.viewerUser);
+    prefsAuth.putString("viewer_pass", g_auth.viewerPass);
+    prefsAuth.putString("admin_user",  g_auth.adminUser);
+    prefsAuth.putString("admin_pass",  g_auth.adminPass);
+    prefsAuth.end();
+  }
+
+  // AP
+  String ap_ssid = server.arg("ap_ssid");
+  String ap_pass = server.arg("ap_pass");
+  String ap_chan = server.arg("ap_chan");
+  String ap_maxc = server.arg("ap_maxc");
+
+  if (ap_ssid.length()) { g_ap.ssid = ap_ssid; apChanged = true; }
+  if (ap_pass.length()) {
+    if (ap_pass.length() < 8) { server.send(400, "text/plain", "AP pass >= 8"); return; }
+    g_ap.pass = ap_pass; apChanged = true;
+  }
+  if (ap_chan.length()) {
+    int ch = ap_chan.toInt();
+    if (ch < 1 || ch > 13) { server.send(400, "text/plain", "AP chan 1..13"); return; }
+    g_ap.channel = (uint8_t)ch; apChanged = true;
+  }
+  if (ap_maxc.length()) {
+    int mc = ap_maxc.toInt();
+    if (mc < 1 || mc > 4) { server.send(400, "text/plain", "AP max 1..4"); return; }
+    g_ap.maxConn = (uint8_t)mc; apChanged = true;
+  }
+
+  if (apChanged) {
+    prefsAp.begin("ap", /*rw=*/false);
+    prefsAp.putString("ssid", g_ap.ssid);
+    prefsAp.putString("pass", g_ap.pass);
+    prefsAp.putUChar("chan", g_ap.channel);
+    prefsAp.putUChar("maxc", g_ap.maxConn);
+    prefsAp.end();
+
+    // Redémarrer l'AP pour appliquer
+    WiFi.softAPdisconnect(true);
+    delay(100);
+    startLocalAP();
+  }
+
+  server.send(200, "application/json", "{\"ok\":true}");
+});
+
+
+server.on("/wifi/scan.json", HTTP_GET, []() {
+  if (!requireAdminAuth()) return;
+
+  int n = WiFi.scanComplete();
+  if (n == WIFI_SCAN_FAILED || n == WIFI_SCAN_RUNNING) {
+    WiFi.scanNetworks(true, /*show_hidden=*/false); // asynchrone
+    server.send(202, "application/json", "{\"status\":\"scanning\"}");
+    return;
+  }
+
+  StaticJsonDocument<2048> j;
+  JsonArray arr = j.createNestedArray("nets");
+  for (int i = 0; i < n; ++i) {
+    JsonObject o = arr.createNestedObject();
+    o["ssid"] = WiFi.SSID(i);
+    o["rssi"] = WiFi.RSSI(i);
+    o["chan"] = WiFi.channel(i);
+    o["enc"]  = WiFi.encryptionType(i); // valeur numérique
+  }
+  WiFi.scanDelete();
+  String out; serializeJson(j, out);
+  server.send(200, "application/json", out);
 });
 
 
@@ -1208,83 +1549,86 @@ server.onNotFound([]() {
 });
 
 
-server.on("/config/network", HTTP_POST,  []() {
+
+// Protéger la mise à jour du Wi-Fi maison
+server.on("/config/network", HTTP_POST, []() {
+  if (!requireAdminAuth()) return;  // ← AJOUT
   AppConfig cur; readAppConfig(cur);
   AppConfig n = cur;
-  if (server.hasArg("ssid"))       n.ssid_wifi = server.arg("ssid");
-  if (server.hasArg("wifi_password")) {
-    String p = server.arg("wifi_password");
-    if (p != "") n.pass_wifi = p;
-  }
-  if (server.hasArg("ip_wifi"))    n.ip_wifi = server.arg("ip_wifi"); // "dhcp" ou "x.x.x.x"
-  if (server.hasArg("id_station")) n.id_station = server.arg("id_station");
-
+  if (server.hasArg("ssid"))          n.ssid_wifi = server.arg("ssid");
+  if (server.hasArg("wifi_password")) { String p = server.arg("wifi_password"); if (p != "") n.pass_wifi = p; }
+  if (server.hasArg("ip_wifi"))       n.ip_wifi = server.arg("ip_wifi"); // "dhcp" ou "X.Y.Z.W"
+  if (server.hasArg("id_station"))    n.id_station = server.arg("id_station");
   if (!updateAppConfig(n)) { server.send(500,"text/plain","db update failed"); return; }
-
-  // (optionnel) appliquer la connexion WiFi si SSID/MdP ont changé
   if (n.ssid_wifi != cur.ssid_wifi || n.pass_wifi != cur.pass_wifi) {
-    WiFi.disconnect(true, true);
-    delay(300);
-    WiFi.begin(n.ssid_wifi.c_str(), n.pass_wifi.c_str());
+    WiFi.disconnect(true, true); delay(300);
+    WiFi.begin(n.ssid_wifi.c_str(), n.pass_wifi.c_str());  // relance STA
   }
-
   server.send(200, "text/plain", "OK");
 });
 
 
+
+
+// au début du fichier :
+extern void apiRefreshConfigFromDb(); // déjà déclaré dans api.h
+
+// dans le handler /config/api :
 server.on("/config/api", HTTP_POST, []() {
   AppConfig cur; readAppConfig(cur);
   AppConfig n = cur;
   if (server.hasArg("api_url"))   n.adresse_api = server.arg("api_url");
   if (server.hasArg("api_token")) n.token       = server.arg("api_token");
-  // checkbox: présent si coché
-  n.activation_envoi_api = server.hasArg("api_enabled") ? 1 : 0;
 
-  if (!updateAppConfig(n)) { server.send(500,"text/plain","db update failed"); return; }
-  apiRefreshConfigFromDb(); // tu l’as déjà
+  // checkbox activation
+  int api_flag = server.hasArg("api_enabled") ? 1 : 0;
+  activation_envoi_api = api_flag;
 
-  server.send(200, "text/plain", "OK");
-});
+  // Mettre à jour la DB (compat), si tu veux garder :
+  updateAppConfig(n);
 
-
-server.on("/config/modules", HTTP_POST, []()  {
-  int bmp280 = server.hasArg("bmp280_enabled") ? 1 : 0;
-  int dht22  = server.hasArg("dht22_enabled")  ? 1 : 0;
-  int sht40  = server.hasArg("sht40_enabled")  ? 1 : 0;
-  int anemo  = server.hasArg("anemo_enabled")  ? 1 : 0;
-  int girou  = server.hasArg("vane_enabled")   ? 1 : 0;  // "vane" côté UI
-  int rain   = server.hasArg("rain_enabled")   ? 1 : 0;
-  int tens   = server.hasArg("tension_enabled")? 1 : 0;  // si tu exposes ce toggle
-  int bitvie = server.hasArg("bitvie_enabled") ? 1 : 0;
-
-  // Mets à jour la base (tu le fais déjà dans /update_config)
-  updateModulesInDB(1, bmp280, dht22, sht40, anemo, girou, rain, tens, bitvie);
-
-  // Mets à jour les variables runtime pour que /status.json reflète la modif sans attendre le poll
-  module_bmp280 = bmp280;
-  module_dht22  = dht22;
-  module_sht40  = sht40;
-  module_anemo  = anemo;
-  module_girou  = girou;
-  module_pluvio = rain;
-  module_tension= tens;
-  module_bitvie = bitvie;
+  // 🔁 Rafraîchir la config API RAM + NVS (NVS prioritaire, fallback DB si NVS vide)
+  apiRefreshConfigFromDb();
 
   server.send(200, "text/plain", "OK");
 });
 
-// /config
-/*
-server.on("/config", HTTP_GET, []() {
-  File file = SPIFFS.open("/config.html", "r");
-  if (file) {
-    server.streamFile(file, "text/html");
-    file.close();
-  } else {
-    server.send(404, "text/plain", "Page config introuvable");
-  }
+
+
+server.on("/config/modules", HTTP_POST, []() {
+  // Lire les champs du formulaire
+  Modules n{};
+  n.bmp280  = server.hasArg("bmp280_enabled") ? 1 : 0;
+  n.dht22   = server.hasArg("dht22_enabled")  ? 1 : 0;
+  n.sht40   = server.hasArg("sht40_enabled")  ? 1 : 0;
+  n.anemo   = server.hasArg("anemo_enabled")  ? 1 : 0;
+  n.girou   = server.hasArg("vane_enabled")   ? 1 : 0;  // "vane" côté UI
+  n.pluvio  = server.hasArg("rain_enabled")   ? 1 : 0;
+  n.tension = server.hasArg("tension_enabled")? 1 : 0;
+  n.bitvie  = server.hasArg("bitvie_enabled") ? 1 : 0;
+
+  // Appliquer immédiatement
+  applyModuleChange(mods, n);
+  mods = n;
+
+  module_bmp280 = n.bmp280;
+  module_dht22  = n.dht22;
+  module_sht40  = n.sht40;
+  module_anemo  = n.anemo;
+  module_girou  = n.girou;
+  module_pluvio = n.pluvio;
+  module_tension= n.tension;
+  module_bitvie = n.bitvie;
+
+  // Persister en NVS
+  saveModulesToNvs(n, activation_envoi_api);
+
+  // (optionnel) Maintenir la DB en phase pour compat si un outil externe la lit
+  // updateModulesInDB(1, n.bmp280, n.dht22, n.sht40, n.anemo, n.girou, n.pluvio, n.tension, n.bitvie);
+
+  server.send(200, "text/plain", "OK");
 });
-*/
+
 
 // /style (MIME + cache)
 server.on("/style", HTTP_GET, []() {
@@ -1312,17 +1656,18 @@ server.on("/script", HTTP_GET, []() {
 });
 
 //javascript configjs
+
 server.on("/configjs", HTTP_GET, []() {
   const char* path = "/configjs.js";
-  if (!SPIFFS.exists(path)) {
-    server.send(404, "text/plain", "configjs.js introuvable");
-    return;
-  }
+  if (!SPIFFS.exists(path)) { server.send(404, "text/plain", "configjs.js introuvable"); return; }
   File f = SPIFFS.open(path, "r");
-  server.sendHeader("Cache-Control", "public, max-age=604800, immutable");
+  // ❗ pas de cache pour ce fichier : on veut les derniers correctifs JS
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server.sendHeader("Pragma", "no-cache");
   server.streamFile(f, "text/javascript");
   f.close();
 });
+
 
 // /infos
 server.on("/infos", HTTP_GET,  [] (){
@@ -1521,8 +1866,205 @@ server.on("/api/push/status", HTTP_GET, [] (){
     server.send(200, "application/json", "{\"ok\":true}");
   });
 
+  
+// Retourne les N dernières lignes du journal depuis le ring-buffer (log_read)
+server.on("/log/tail", HTTP_GET,  []() {
+  // 1) Nombre de lignes demandé (par défaut 250)
+  int n = 250;
+  if (server.hasArg("n")) {
+    int tmp = server.arg("n").toInt();
+    if (tmp >= 10 && tmp <= 5000) n = tmp;
+  }
+
+  // 2) Lire le journal depuis le ring-buffer (pas besoin d'attendre le flush SPIFFS)
+  String body;
+  if (!log_read(body, 64 * 1024)) {           // lis jusqu’à 64 kB de mémoire tampon
+    server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    server.send(200, "text/plain; charset=utf-8", "(journal indisponible)");
+    return;
+  }
+
+  // 3) Extraire les N dernières lignes côté ESP (plus robuste que côté JS)
+  int count = 0;
+  for (int i = body.length() - 1; i >= 0 && count < n; --i) {
+    if (body[i] == '\n') count++;
+  }
+
+  int pos = 0;
+  if (count >= n) {
+    int need = n;
+    for (int i = body.length() - 1; i >= 0; --i) {
+      if (body[i] == '\n' && --need == 0) { pos = i + 1; break; }
+    }
+  }
+
+  String tail = body.substring(pos);
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server.send(200, "text/plain; charset=utf-8", tail.length() ? tail : "(journal vide)");
+});
 
 
+
+// --- Données simplifiées pour l'écran (ESP8266) : protégé "viewer" ---
+server.on("/screen/data.json", HTTP_GET, []() {
+  if (!requireViewerAuth()) return;
+
+  StaticJsonDocument<512> doc;
+  doc["t"]    = g_snap.temp_bmp;        // °C (BMP)
+  doc["h"]    = g_snap.hum;             // % (DHT)
+  doc["p"]    = g_snap.press_hPa;       // hPa
+  doc["w"]    = g_snap.wind;            // km/h
+  doc["g"]    = g_snap.gust;            // km/h
+  doc["dir"]  = g_snap.dir_deg;         // deg (0..359, -1 = null)
+  doc["rain"] = g_snap.rain_cum;        // mm cumulés
+  doc["vb"]   = g_snap.batt_v;          // V
+  doc["vs"]   = g_snap.solar_v;         // V
+  doc["ts"]   = g_snap.datetime;        // "YYYY-MM-DD HH:MM:SS"
+
+  String out; serializeJson(doc, out);
+  server.send(200, "application/json", out);
+});
+
+
+
+// --- Test d'authentification (diagnostic rapide) ---
+server.on("/auth/test", HTTP_GET, []() {
+  if (server.authenticate(g_auth.adminUser.c_str(), g_auth.adminPass.c_str())) {
+    server.send(200, "application/json", "{\"role\":\"admin\"}");
+    return;
+  }
+  if (server.authenticate(g_auth.viewerUser.c_str(), g_auth.viewerPass.c_str())) {
+    server.send(200, "application/json", "{\"role\":\"viewer\"}");
+    return;
+  }
+  server.requestAuthentication(); // 401
+});
+
+
+// --- GET /config/offsets : lire les offsets
+server.on("/config/offsets", HTTP_GET, []() {
+  if (!requireAdminAuth()) return;
+  StaticJsonDocument<256> j;
+  j["t_bmp"]   = ofs.t_bmp;
+  j["t_dht"]   = ofs.t_dht;
+  j["h_dht"]   = ofs.h_dht;
+  j["press"]   = ofs.press;
+  j["wind"]    = ofs.wind;
+  j["t_sht40"] = ofs.t_sht40;
+  String out; serializeJson(j, out);
+  server.send(200, "application/json", out);
+});
+
+// --- POST /config/offsets.save : enregistrer offsets
+server.on("/config/offsets.save", HTTP_POST, []() {
+  if (!requireAdminAuth()) return;
+  auto readF = [&](const char* key, float &dst){
+    if (server.hasArg(key)) { dst = server.arg(key).toFloat(); }
+  };
+  readF("t_bmp",   ofs.t_bmp);
+  readF("t_dht",   ofs.t_dht);
+  readF("h_dht",   ofs.h_dht);
+  readF("press",   ofs.press);
+  readF("wind",    ofs.wind);
+  readF("t_sht40", ofs.t_sht40);
+  saveOffsetsToNvs(ofs);
+  app_logf("[Offsets] t_bmp=%.2f t_dht=%.2f h_dht=%.2f press=%.2f wind=%.2f t_sht40=%.2f",
+           ofs.t_bmp, ofs.t_dht, ofs.h_dht, ofs.press, ofs.wind, ofs.t_sht40);
+  server.send(200, "application/json\"ok\":true}");
+});
+
+// --- POST /records/reset : reset min/max (day / all / both)
+server.on("/records/reset", HTTP_POST, []() {
+  if (!requireAdminAuth()) return;
+  String scope = server.hasArg("scope") ? server.arg("scope") : "both";
+
+  if (scope == "day" || scope == "both") {
+    ST_tempExt.resetDaily(); ST_humExt.resetDaily(); ST_press.resetDaily();
+    ST_batt.resetDaily();    ST_solar.resetDaily();
+    GUST_maxDay = 0.0f; GUST_dirDay = -1;
+  }
+  if (scope == "all" || scope == "both") {
+    // Efface les records all‑time en NVS
+    prefs.begin("records", /*rw=*/false);
+    prefs.clear();
+    prefs.end();
+    // Réinitialise les copies en RAM
+    ST_tempExt.minAll = ST_tempExt.maxAll = NAN;
+    ST_humExt.minAll  = ST_humExt.maxAll  = NAN;
+    ST_press.minAll   = ST_press.maxAll   = NAN;
+    ST_batt.minAll    = ST_batt.maxAll    = NAN;
+    ST_solar.minAll   = ST_solar.maxAll   = NAN;
+    GUST_maxAll = 0.0f; GUST_dirAll = -1;
+    g_recordsDirty = false;
+  }
+  app_logf("[Records] Reset scope=%s", scope.c_str());
+  server.send(200, "application/json", "{\"ok\":true}");
+});
+
+
+// --- Données complètes pour écran/dash (protégé "viewer") ---
+server.on("/screen/full.json", HTTP_GET, []() {
+  if (!requireViewerAuth()) return;
+
+  // Taille un peu plus large que 512 pour être à l’aise
+  StaticJsonDocument<1536> doc;
+
+  // 1) Mesures (corrigées, depuis g_snap)
+  doc["t_bmp"] = g_snap.temp_bmp;        // °C BMP
+  doc["t_dht"] = g_snap.temp_dht;        // °C DHT (si alimenté)
+  doc["hum"]   = g_snap.hum;             // % (0..100)
+  doc["press"] = g_snap.press_hPa;       // hPa
+  doc["dew"]   = g_snap.dew;             // point de rosée (°C)
+
+  // Vent & pluie
+  doc["wind"]  = g_snap.wind;            // km/h instantané
+  doc["gust"]  = g_snap.gust;            // km/h rafale
+  doc["dir"]   = g_snap.dir_deg;         // degrés (0..359, -1 si inconnu)
+  doc["dirc"]  = degToCardinal(g_snap.dir_deg);  // libellé cardinal
+  doc["rain_cum"]  = g_snap.rain_cum;    // mm cumulés (total courant)
+  doc["rain_hour"] = rainHourMm();       // mm dernière heure
+  doc["rain_day"]  = rainDayMm();        // mm du jour
+  doc["rain_week"] = rainWeekMm();       // mm (semaine glissante)
+
+  // Tensions
+  doc["vb"] = g_snap.batt_v;             // V batterie
+  doc["vs"] = g_snap.solar_v;            // V panneau
+
+  // 2) Stats min/max (jour + all-time)
+  JsonObject s = doc.createNestedObject("stats");
+  s["t_min_day"] = ST_tempExt.minDay;    s["t_max_day"] = ST_tempExt.maxDay;
+  s["t_min_all"] = ST_tempExt.minAll;    s["t_max_all"] = ST_tempExt.maxAll;
+  s["h_min_day"] = ST_humExt.minDay;     s["h_max_day"] = ST_humExt.maxDay;
+  s["h_min_all"] = ST_humExt.minAll;     s["h_max_all"] = ST_humExt.maxAll;
+  s["p_min_day"] = ST_press.minDay;      s["p_max_day"] = ST_press.maxDay;
+  s["p_min_all"] = ST_press.minAll;      s["p_max_all"] = ST_press.maxAll;
+  s["vb_min_day"] = ST_batt.minDay;      s["vb_max_day"] = ST_batt.maxDay;
+  s["vb_min_all"] = ST_batt.minAll;      s["vb_max_all"] = ST_batt.maxAll;
+  s["vs_min_day"] = ST_solar.minDay;     s["vs_max_day"] = ST_solar.maxDay;
+  s["vs_min_all"] = ST_solar.minAll;     s["vs_max_all"] = ST_solar.maxAll;
+  // Rafales
+  s["gust_max_day"] = GUST_maxDay;       s["gust_dir_day"] = GUST_dirDay;
+  s["gust_max_all"] = GUST_maxAll;       s["gust_dir_all"] = GUST_dirAll;
+
+  // 3) KPI réseau & horodatage
+  int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
+  int pct  = rssiToPercent(rssi);
+  int bars = pctToBars(pct);
+  JsonObject net = doc.createNestedObject("net");
+  net["wifi_rssi"]    = rssi;            // dBm
+  net["wifi_percent"] = pct;             // 0..100
+  net["wifi_bars"]    = bars;            // 0..4
+
+  doc["ts"]       = g_snap.datetime;     // "YYYY-MM-DD HH:MM:SS"
+  doc["uptime_s"] = (uint32_t)(millis() / 1000UL);
+  doc["compteur"] = (uint32_t)compteur;  // ton compteur monotone
+
+  // 4) Bonus: vent moyen 10 min
+  doc["wind_avg10"] = windAvg10min();
+
+  String out; serializeJson(doc, out);
+  server.send(200, "application/json", out);
+});
 
 
 // ElegantOTA integration commented out to avoid conflicts with ArduinoOTA
@@ -1636,6 +2178,17 @@ ArduinoOTA.onError([](ota_error_t error) {
 
   // dans setup(), après avoir initialisé `server` :
   setupLocalStationApiHandler(server);
+  
+  // Route version
+  server.on("/api/version", HTTP_GET, []() {
+    StaticJsonDocument<256> doc;
+    doc["firmware"] = FIRMWARE_VERSION;
+    doc["config_schema"] = CONFIG_SCHEMA_VERSION;
+    doc["build_date"] = BUILD_DATE;
+    String payload; serializeJson(doc, payload);
+    server.send(200, "application/json", payload);
+  });
+  
   // fetch immédiat au démarrage
   startStationInfoBackgroundTask();
 
@@ -1650,7 +2203,12 @@ ArduinoOTA.onError([](ota_error_t error) {
   Serial.println("ArduinoOTA ready.");
    app_logf("ArduinoOTA ready.");
 
-  
+
+  // Afficher l’état SPIFFS au boot
+  app_logf("[SPIFFS] total=%u used=%u free=%u",
+    (unsigned)SPIFFS.totalBytes(), (unsigned)SPIFFS.usedBytes(),
+    (unsigned)(SPIFFS.totalBytes()-SPIFFS.usedBytes()));
+
 
 }
 
@@ -1672,6 +2230,13 @@ void loop() {
     ArduinoOTA.handle();        // doit rester réactif
 
     
+    // Reconnexion STA non bloquante si déconnecté
+    if (!g_staConnected && (long)(millis() - g_nextReconnectMs) >= 0) {
+      startStaFromDB();                    // relance depuis DB (SSID/MdP)
+      g_nextReconnectMs = millis() + g_backoffMs;
+    }
+
+    
   // 👉 Si OTA en cours : on ne fait **rien d'autre** pour éviter la faim CPU/mémoire
     if (otaInProgress) {
       delay(1); // micro pause coopérative
@@ -1689,7 +2254,7 @@ void loop() {
     resetDailyStatsAtMidnightIfNeeded(now);
 
 
-    if (millis() - tDbHealth >= 5000) {       // toutes les 5 s
+    if (millis() - tDbHealth >= 10000) {       // toutes les 5 s
       if (!otaInProgress) {
         db_reopen_if_needed("/spiffs/station.db");                // réouvre seulement si nécessaire
       } else {
@@ -1740,59 +2305,7 @@ void loop() {
     }
 
     
-   // [CONSERVÉ] Poll modules (toutes 5 s) + applyModuleChange(...)
-
-
-    // --- Poll modules + activation API (toutes les 5 s) — UN SEUL BLOC
-    static unsigned long tPollMods = 0;
-    if (millis() - tPollMods >= 5000) {
-      Modules newMods;
-      if (loadModulesFromDB(newMods)) {
-        if (!modulesEqual(newMods, mods)) {
-          applyModuleChange(mods, newMods);
-          mods = newMods;
-          Serial.println(F("[CFG] Modules modifiés -> appliqués"));
-          app_logf("[CFG] Modules modifiés -> appliqués");
-        }
-      } else {
-        Serial.println(F("Erreur lors de la lecture des modules."));
-        app_logf("Erreur lors de la lecture des modules.");
-      }
-      int activation = 0;
-      if (readActivationApi(activation)) activation_envoi_api = activation;
-      tPollMods = millis();
-    }
-
-
-
-   
-    //Gestion activation des modules
-
-    // TOUTES LES 5 s
-    static unsigned long tDbPoll = 0;
-    if (millis() - tDbPoll >= 5000) {
-      Modules newMods;
-      if (loadModulesFromDB(newMods)) {
-        if (!modulesEqual(newMods, mods)) {
-          applyModuleChange(mods, newMods);
-          mods = newMods;
-          Serial.println(F("[CFG] Modules modifiés -> appliqués"));
-          app_logf("[CFG] Modules modifiés -> appliqués");
-        }
-      } else {
-        Serial.println(F("Erreur lors de la lecture des modules."));
-        app_logf("Erreur lors de la lecture des modules.");
-      }
-
-      // Lis aussi l’activation API ici, pas à chaque loop :
-      int activation = 0;
-      if (readActivationApi(activation)) {
-        activation_envoi_api = activation;
-      }
-
-      tDbPoll = millis();
-    }
-
+    // Anémomètre
     if(module_anemo == 1) {
       etat_anemo = anemo_ok_bit_strict(); // 1 si OK, 0 sinon
           // Anémomètre
@@ -1850,16 +2363,7 @@ void loop() {
     if (jitter) dueAt += jitter;                       // petit décalage
   };
 
-  
-    //static unsigned long lastSendEtatStation = 0;
-    //if (millis() - lastSendEtatStation > 60000) { // toutes les 60 secondes
-    //    sendLatestEtatStationMeteoToApi();
-    //    lastSendEtatStation = millis();
-    //}
 
-    // Effectuer les tâches toutes les 30 secondes (30000 ms)
-
-    
     
   // --- Lectures capteurs périodiques & mise à jour DB (toutes les 30 s)
   unsigned long nowMs = millis();
@@ -1928,45 +2432,72 @@ void loop() {
       degret = 0; etat_girou = 0;
     }
 
-    // Point de rosée (à partir des mesures du moment)
-    float point_de_rosee = calculPointRosee(temp1, humiditer);
+    
+  // --- Appliquer les offsets aux mesures brutes ---
+  float temp1_corr = temp1 + ofs.t_bmp;         // °C BMP
+  float temp2_corr = temp2 + ofs.t_dht;         // °C DHT
+  float hum_corr   = ((float)humiditer) + ofs.h_dht;
+  if (hum_corr < 0) hum_corr = 0; if (hum_corr > 100) hum_corr = 100;
+  int   humiditer_corr = (int)roundf(hum_corr);
+
+  float press_corr  = pression + ofs.press;     // hPa
+  float vent_corr   = max(0.0f, vitesse + ofs.wind);
+  float rafale_corr = max(0.0f, rafale  + ofs.wind);
+
+  // Point de rosée avec valeurs corrigées
+  // Point de rosée (à partir des mesures du moment)
+  float point_de_rosee = calculPointRosee(temp1_corr, humiditer_corr);
+
+  // --- Stats (journalières + all-time) sur valeurs corrigées ---
+  time_t nowEpoch = now.unixtime();
+  updateStat(ST_tempExt, temp1_corr, nowEpoch);
+  updateStat(ST_humExt,  (float)humiditer_corr, nowEpoch);
+  updateStat(ST_press,   press_corr,  nowEpoch);
+
+  // --- Snapshot RAM pour l'UI / JSON (corrigé) ---
+  g_snap.temp_bmp  = temp1_corr;
+  g_snap.hum       = (float)humiditer_corr;
+  g_snap.press_hPa = press_corr;
+  g_snap.wind      = vent_corr;
+  g_snap.gust      = rafale_corr;
+  g_snap.dir_deg   = degret;
+  g_snap.rain_cum  = quantite;
+  g_snap.batt_v    = tension_batterie;
+  g_snap.solar_v   = tension_solaire;
+  g_snap.dew       = point_de_rosee;
+  strncpy(g_snap.datetime, datetime, sizeof(g_snap.datetime)-1);
+  g_snap.datetime[sizeof(g_snap.datetime)-1] = '\0';
+  g_snap.now_ms    = nowMs;
+
+    
+    
 
     // --- Mise à jour DB (station_direct / tensions / état capteurs)
     if (!otaInProgress) {
       Serial.println("Mise à jour de la base de données.");
-      float temp1_r         = round2f(temp1);
-      float pression_r      = round2f(pression);
-      float temp2_r         = round2f(temp2);
-      float humiditer_r     = round2f(humiditer);
+      float temp1_r         = round2f(temp1_corr);
+      float pression_r      = round2f(press_corr);
+      float temp2_r         = round2f(temp2_corr);
+      float humiditer_r     = round2f(humiditer_corr);
       float rosee_r         = round2f(point_de_rosee);
-      float vitesse_r       = round2f(vitesse);
-      float rafale_r        = round2f(rafale);
+      float vitesse_r       = round2f(vent_corr);
+      float rafale_r        = round2f(rafale_corr);
       float vb_r            = round2f(tension_batterie);
       float vs_r            = round2f(tension_solaire);
 
-      updateStationDirect(1, temp2_r, humiditer_r, temp1_r, pression_r,
-                          tension_solaire, vitesse_r, degret, quantite,
-                          rosee_r, 0.0, nowMs, datetime, rafale_r);
-
-      updateTensions(1, vb_r, vs_r);
-
-      updateEtatCapteurs(1, etat_dht22, etat_bmp280, etat_pluvio,
-                         etat_girou, etat_anemo, tension_batterie, tension_solaire);
-      
       
     }
 
     // --- Stats & records (journaliers + all-time)
-    time_t nowEpoch = now.unixtime();
-    updateStat(ST_tempExt, temp1, nowEpoch);
-    updateStat(ST_humExt,  (float)humiditer, nowEpoch);
-    updateStat(ST_press,   pression, nowEpoch);
+    updateStat(ST_tempExt, temp1_corr, nowEpoch);
+    updateStat(ST_humExt,  (float)humiditer_corr, nowEpoch);
+    updateStat(ST_press,   press_corr,  nowEpoch);
     updateStat(ST_batt,    tension_batterie, nowEpoch);
     updateStat(ST_solar,   tension_solaire,  nowEpoch);
 
-    if (!isnan(rafale)) {
-      if (rafale > GUST_maxDay) { GUST_maxDay = rafale; GUST_dirDay = degret; }
-      if (rafale > GUST_maxAll) { GUST_maxAll = rafale; GUST_dirAll = degret; g_recordsDirty = true; }
+    if (!isnan(rafale_corr)) {
+      if (rafale_corr > GUST_maxDay) { GUST_maxDay = rafale_corr; GUST_dirDay = degret; }
+      if (rafale_corr > GUST_maxAll) { GUST_maxAll = rafale_corr; GUST_dirAll = degret; g_recordsDirty = true; }
     }
     saveAllTimeRecordsIfDirty();
 
@@ -1976,7 +2507,39 @@ void loop() {
     
     Serial.printf("[30s] nextUpdateMs=%lu nextDueRow=%lu nextDueEtat=%lu\n",
                   nextUpdateMs, nextDueRow, nextDueEtat);
-  }
+  
+  
+      // --- NO-DB: remplir le snapshot RAM
+      g_snap.temp_dht = temp2_corr;                     // DHT22
+      g_snap.hum = (float)humiditer_corr;               // DHT22
+      g_snap.temp_bmp = temp1_corr;                     // BMP280
+      g_snap.press_hPa = press_corr;
+
+      g_snap.wind = vent_corr;
+      g_snap.gust = rafale_corr;
+      g_snap.dir_deg = degret;
+      g_snap.rain_cum = quantite;
+
+      g_snap.batt_v = tension_batterie;
+      g_snap.solar_v = tension_solaire;
+      g_snap.dew = point_de_rosee;
+
+      strncpy(g_snap.datetime, datetime, sizeof(g_snap.datetime)-1);
+      g_snap.datetime[sizeof(g_snap.datetime)-1] = '\0';
+      g_snap.now_ms = nowMs;
+      
+    // --- Compteur monotone (1 par cycle 30 s)
+    compteur++;
+
+    // Sauvegarde NVS toutes les 10 minutes (anti-usure flash)
+    static unsigned long tCtrSave = 0;
+    if (millis() - tCtrSave >= 600000UL) { // 600000 ms = 10 min
+      saveCounterToNvs();
+      tCtrSave = millis();
+    }
+
+
+ }
 
   // --- Envoi API (indépendant, cadencé par nextDueRow/nextDueEtat)
   
@@ -1992,6 +2555,18 @@ void loop() {
                 nextDueRow,  (long)(nextDueRow  - nowMs),
                 nextDueEtat, (long)(nextDueEtat - nowMs));
 
+  
+  // --- Garder l'horaire propre même si on n'envoie pas maintenant ---
+
+
+  // Maintenir les échéances dans le FUTUR quand on n'envoie pas
+  if (activation_envoi_api != 1 || otaInProgress || pushBusy) {
+    if ((long)(nowMs - nextDueRow)  >= 0)  { reschedForwardToFuture(nextDueRow,  ROW_PERIOD_MS); }
+    if ((long)(nowMs - nextDueEtat) >= 0)  { reschedForwardToFuture(nextDueEtat, ETAT_PERIOD_MS); }
+  }
+
+
+
   if (activation_envoi_api == 1 && !otaInProgress && !pushBusy) {
     if (dueRow) {
       pushBusy = true; sendLatestRowToApi(); pushBusy = false;
@@ -2004,10 +2579,15 @@ void loop() {
       nextDueEtat += ETAT_PERIOD_MS;               // +60 s (⚠ pas d'offset récurrent)
       // on ne remet PAS ETAT_OFFSET_MS ici, l’offset n’est appliqué qu’une fois au tout début
     }
-  } else if (activation_envoi_api != 1) {
-    Serial.println(F("Envoi des données à l'API désactivé."));
-    log_line("API: Envoi des données à l'API désactivé.");
-  }
+
+    } else if (activation_envoi_api != 1) {
+      static unsigned long tLastApiOffLog = 0;
+      if (millis() - tLastApiOffLog >= 60000UL) {
+        Serial.println(F("Envoi des données à l'API désactivé."));
+        log_line("API: Envoi des données à l'API désactivé.");
+        tLastApiOffLog = millis();
+      }
+    }
 
   log_tick();
   delay(100);

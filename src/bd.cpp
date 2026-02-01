@@ -6,6 +6,7 @@
 #include "freertos/semphr.h"
 #include "log.h"
 
+
 extern sqlite3 *db;
 
 
@@ -66,6 +67,15 @@ bool updateStationDirect(
     return false;
   }
 
+  int ec = sqlite3_errcode(db);
+  if (ec == SQLITE_NOTADB) {
+    app_logf("[DB] NOTADB -> try repair");
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+    bool repaired = db_try_repair_if_notadb();
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    app_logf("[DB] repair result: %s", repaired ? "OK" : "FAIL");
+  }
+
   int changes = sqlite3_changes(db);  // 0 si la ligne n'existe pas OU si valeurs identiques
   //Serial.printf("[SQLite] station_direct updated, changes=%d\n", changes);
 
@@ -102,6 +112,15 @@ bool updateAnemometre(int id, float anemometre) {
     return false;
   }
 
+  int ec = sqlite3_errcode(db);
+  if (ec == SQLITE_NOTADB) {
+    app_logf("[DB] NOTADB -> try repair");
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+    bool repaired = db_try_repair_if_notadb();
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    app_logf("[DB] repair result: %s", repaired ? "OK" : "FAIL");
+  }
+
   sqlite3_finalize(stmt);
   if (g_dbMutex) xSemaphoreGive(g_dbMutex);
   return true;
@@ -133,6 +152,16 @@ bool updateTensions(int id, float tension_batterie, float tension_solaire) {
     sqlite3_finalize(stmt);
     if (g_dbMutex) xSemaphoreGive(g_dbMutex);
     return false;
+  }
+
+  
+  int ec = sqlite3_errcode(db);
+  if (ec == SQLITE_NOTADB) {
+    app_logf("[DB] NOTADB -> try repair");
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+    bool repaired = db_try_repair_if_notadb();
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    app_logf("[DB] repair result: %s", repaired ? "OK" : "FAIL");
   }
 
   //int changes = sqlite3_changes(db);
@@ -183,6 +212,15 @@ bool updateEtatCapteurs(int id,
     return false;
   }
 
+    int ec = sqlite3_errcode(db);
+  if (ec == SQLITE_NOTADB) {
+    app_logf("[DB] NOTADB -> try repair");
+    if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+    bool repaired = db_try_repair_if_notadb();
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    app_logf("[DB] repair result: %s", repaired ? "OK" : "FAIL");
+  }
+
   sqlite3_finalize(stmt);
   if (g_dbMutex) xSemaphoreGive(g_dbMutex);
   return true;
@@ -220,6 +258,7 @@ const char *sql =
     app_logf("Erreur step (updateModulesInDB): %s\n", sqlite3_errmsg(db));
     sqlite3_finalize(stmt);
     if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+
     return ok;
 }
 
@@ -276,7 +315,115 @@ bool updateAppConfig(const AppConfig& c) {
 
     bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
     sqlite3_finalize(stmt);
+
+    
+    if (ok) {
+      backupConfigToNVS(c);   // ✅ copie de secours NVS
+    }
+
     if (g_dbMutex) xSemaphoreGive(g_dbMutex);
     return ok;
+}
+
+
+bool updatePeriodicAtomic(
+  int id,
+  float tempdht22, float humiditer, float tempbmp280, float pression, float lumiere,
+  float anemometre, float girouette, float pluviometre, float pointderosee,
+  float ghost, float tpsvie, const String& ts, float rafale,
+  float tension_batterie, float tension_solaire,
+  int capteur_dht22, int capteur_bmp280, int capteur_pluvio, int capteur_girou, int capteur_anemo
+) {
+  if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(2000));
+
+  char* err = nullptr;
+  int rc = sqlite3_exec(db, "BEGIN IMMEDIATE;", nullptr, nullptr, &err);
+  if (rc != SQLITE_OK) {
+    if (err) sqlite3_free(err);
+    if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+    app_logf("[DB] BEGIN failed: %d %s", rc, sqlite3_errmsg(db));
+    return false;
+  }
+
+  bool ok = true;
+  sqlite3_stmt* s1=nullptr; sqlite3_stmt* s2=nullptr; sqlite3_stmt* s3=nullptr;
+
+  // 1) station_direct
+  const char* q1 =
+    "UPDATE station_direct SET "
+    "tempdht22=?, humiditer=?, tempbmp280=?, pression=?, lumiere=?, "
+    "anemometre=?, girouette=?, pluviometre=?, pointderosee=?, ghost=?, tpsvie=?, timestamp=?, rafale=? "
+    "WHERE id=?;";
+  if (sqlite3_prepare_v2(db, q1, -1, &s1, NULL) != SQLITE_OK) ok=false;
+  else {
+    sqlite3_bind_double(s1, 1, tempdht22);
+    sqlite3_bind_double(s1, 2, humiditer);
+    sqlite3_bind_double(s1, 3, tempbmp280);
+    sqlite3_bind_double(s1, 4, pression);
+    sqlite3_bind_double(s1, 5, lumiere);
+    sqlite3_bind_double(s1, 6, anemometre);
+    sqlite3_bind_double(s1, 7, girouette);
+    sqlite3_bind_double(s1, 8, pluviometre);
+    sqlite3_bind_double(s1, 9, pointderosee);
+    sqlite3_bind_double(s1,10, ghost);
+    sqlite3_bind_double(s1,11, tpsvie);
+    sqlite3_bind_text  (s1,12, ts.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(s1,13, rafale);
+    sqlite3_bind_int   (s1,14, id);
+    if (sqlite3_step(s1) != SQLITE_DONE) ok=false;
+    sqlite3_finalize(s1);
+  }
+
+  // 2) tensions
+  if (ok) {
+    const char* q2 = "UPDATE tensions SET tension_batterie=?, tension_solaire=? WHERE id=?;";
+    if (sqlite3_prepare_v2(db, q2, -1, &s2, NULL) != SQLITE_OK) ok=false;
+    else {
+      sqlite3_bind_double(s2, 1, tension_batterie);
+      sqlite3_bind_double(s2, 2, tension_solaire);
+      sqlite3_bind_int   (s2, 3, id);
+      if (sqlite3_step(s2) != SQLITE_DONE) ok=false;
+      sqlite3_finalize(s2);
+    }
+  }
+
+  // 3) etatcapteurs
+  if (ok) {
+    const char* q3 =
+      "UPDATE etatcapteurs SET "
+      "capteur_dht22=?, capteur_bmp280=?, capteur_pluvio=?, capteur_girou=?, capteur_anemo=?, "
+      "tension_solaire=?, tension_batterie=? WHERE id=?;";
+    if (sqlite3_prepare_v2(db, q3, -1, &s3, NULL) != SQLITE_OK) ok=false;
+    else {
+      sqlite3_bind_int   (s3, 1, capteur_dht22);
+      sqlite3_bind_int   (s3, 2, capteur_bmp280);
+      sqlite3_bind_int   (s3, 3, capteur_pluvio);
+      sqlite3_bind_int   (s3, 4, capteur_girou);
+      sqlite3_bind_int   (s3, 5, capteur_anemo);
+      sqlite3_bind_double(s3, 6, tension_solaire);
+      sqlite3_bind_double(s3, 7, tension_batterie);
+      sqlite3_bind_int   (s3, 8, id);
+      if (sqlite3_step(s3) != SQLITE_DONE) ok=false;
+      sqlite3_finalize(s3);
+    }
+  }
+
+  // COMMIT/ROLLBACK
+  if (ok) rc = sqlite3_exec(db, "COMMIT;", nullptr, nullptr, &err);
+  else    rc = sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, &err);
+  if (err) sqlite3_free(err);
+
+  if (!ok || rc != SQLITE_OK) {
+    int ec = sqlite3_errcode(db);
+    app_logf("[DB] periodic atomic failed ec=%d %s", ec, sqlite3_errmsg(db));
+    // Auto-repair si NOTADB
+    if (ec == SQLITE_NOTADB) {
+      bool repaired = db_try_repair_if_notadb();
+      app_logf("[DB] repair result: %s", repaired ? "OK" : "FAIL");
+    }
+  }
+
+  if (g_dbMutex) xSemaphoreGive(g_dbMutex);
+  return ok && (rc == SQLITE_OK);
 }
 

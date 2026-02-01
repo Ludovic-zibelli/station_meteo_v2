@@ -47,3 +47,13 @@ bool updateActivationApiInDB(int id, int activation_envoi_api);
 bool updateAppConfig(const AppConfig& c);  // UPDATE config SET ... WHERE id=1
 
 
+
+// bd.h
+bool updatePeriodicAtomic(
+  int id,
+  float tempdht22, float humiditer, float tempbmp280, float pression, float lumiere,
+  float anemometre, float girouette, float pluviometre, float pointderosee,
+  float ghost, float tpsvie, const String& ts, float rafale,
+  float tension_batterie, float tension_solaire,
+  int capteur_dht22, int capteur_bmp280, int capteur_pluvio, int capteur_girou, int capteur_anemo
+);

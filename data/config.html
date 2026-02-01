@@ -6,9 +6,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="shortcut icon" href="/images/logo_meteo.png" />
-  <link rel="stylesheet" href="/style" />
-  <script src="/configjs" defer></script>
+  <script src="/configjs?v=8" defer></script>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="/style?v=7" />
   <title>METEOSPIT.fr — Configuration Station ESP32</title>
   
  
@@ -31,8 +31,8 @@
   </header>
 
   <main class="wrap">
-    <h1>🛠️ Configuration — Station METEOSPIT ESP32</h1>
-    <p class="subtitle">Contrôle API, NTP/RTC, modules, et une visu live cohérente avec la page d’accueil.</p>
+    <h1 style="text-align:center; margin-bottom:0.25rem;">🛠️ Configuration — Station METEOSPIT ESP32</h1>
+    <p class="subtitle" style="text-align:center; margin-top:0.25rem;">Contrôle API, NTP/RTC, modules, et une visu live cohérente avec la page d’accueil.</p>
 
     <!-- Grille de cartes (auto-fit) -->
     <div class="cards">
@@ -73,10 +73,43 @@
         <div class="actions-vertical">
         <button id="setTimeBtn" class="btn btn-block">🕘 Mettre l’horloge à l’heure (NTP → RTC)</button>
         <button id="refreshStatusBtn" class="btn btn-outline btn-block">↻ Rafraîchir statut</button>
+        <div>Dernier relevé</div> <div><span id="lastTs">--</span></div>
         </div>
         <small class="sub" id="ntpResult">Résultat : —</small>
       </section>
+      
+      <section class="card">
+        <h2 class="title">📶 Réseau Wi‑Fi (maison)</h2>
+        <div class="kv">
+          <div>SSID</div>          <div><input id="sta_ssid"  placeholder="Nom du Wi‑Fi maison"></div>
+          <div>Mot de passe</div>  <div><input id="sta_pass"  type="password" placeholder="Nouveau mot de passe"></div>
+          <div>Adresse IP</div>    <div>
+            <select id="sta_ipmode">
+              <option value="dhcp">DHCP (auto)</option>
+              <option value="static">IP fixe…</option>
+            </select>
+            <input id="sta_ip" placeholder="192.168.x.y" style="width:160px;display:none;margin-left:8px">
+          </div>
+        </div>
 
+        <div class="actions-vertical">
+          <button id="btnWifiScan"  class="btn btn-outline btn-block">🔍 Scanner les réseaux</button>
+          <button id="btnWifiSave"  class="btn btn-block">💾 Enregistrer & reconnecter</button>
+          <div>RSSI <strong id="wifiRssi">--</strong> dBm • Qualité <strong id="wifiPct">--</strong>% • Barres <strong id="wifiBars">--</strong></div>
+        </div>
+
+        <small class="sub">
+          Cette action met à jour la config STA et relance la connexion au Wi‑Fi maison.
+          L’AP <em>METEOSPIT</em> reste actif pendant l’opération.
+        </small>
+
+        <div id="scanResults" class="table-wrap" style="display:none;margin-top:8px">
+          <table class="table table-compact table-striped scan-table">
+            <thead><tr><th>SSID</th><th>RSSI</th><th>Canal</th><th></th></tr></thead>
+            <tbody id="scanBody"></tbody>
+          </table>
+        </div>
+      </section>
       <!-- ===== Modules & Capteurs ===== -->
       <section class="card">
         <h2 class="title">🧩 Modules & Capteurs</h2>
@@ -116,24 +149,14 @@
         <div>Pluie h/j/s</div>    <div><span id="rainH">--</span> / <span id="rainD">--</span> / <span id="rainW">--</span> mm</div>
         <div>Batterie / Solaire</div>
         <div><span id="vb">--</span> V • <span id="vs">--</span> V</div>
-    </div>
-    </section>
-
-    <!-- ===== Visu Live — Connectivité & Horodatage ===== -->
-    <section class="card">
-    <h2 class="title">📶 Connectivité & 🕒 Horodatage</h2>
-
-    <div class="kv">
-        <div>Wi‑Fi</div>
-        <div>RSSI <strong id="wifiRssi">--</strong> dBm • Qualité <strong id="wifiPct">--</strong>% • Barres <strong id="wifiBars">--</strong></div>
-
         <div>Dernier relevé</div> <div><span id="lastTs">--</span></div>
         <div>Bit de vie</div>     <div><span id="tpsVie">--</span></div>
     </div>
     </section>
 
+
     <!-- ===== État des capteurs (tableau dédié) ===== -->
-    <section class="card">
+    <section class="card" id="etat-capteurs">
     <h2 class="title">🧪 État des capteurs</h2>
 
     <div class="table-wrap">
@@ -181,6 +204,120 @@
     </div>
 </section>
 
+<!-- ===== Journal /log.txt ===== -->
+<section class="card">
+  <h2 class="title">📜 Journal — Dernières lignes</h2>
+
+  <div class="kv">
+    <div>Lignes affichées</div>
+    <div>
+      <input type="number" id="logLines" value="250" min="50" max="2000" style="width:110px">
+      <label style="margin-left:12px"><input type="checkbox" id="logAuto" checked> Auto‑refresh</label>
+    </div>
+    <div>État</div>
+    <div><span id="logStatus" class="text-muted">—</span></div>
+  </div>
+
+  <div class="sep"></div>
+
+  <pre id="logTail" class="logbox" aria-label="Dernières lignes du journal"></pre>
+  <small class="sub">Source : <code>/log.txt</code> (affichage client des N dernières lignes)</small>
+</section>
+
+
+<section class="card">
+  <h2 class="title">🧰 Journal — Actions</h2>
+
+  <div class="actions-vertical">
+    <button id="btnLogRefresh" class="btn btn-block">↻ Rafraîchir</button>
+
+    <a class="btn btn-outline btn-block" href="/log.txt" target="_blank" rel="noopener">
+      🔗 Ouvrir /log.txt (nouvel onglet)
+    </a>
+
+    <a class="btn btn-outline btn-block" href="/log.txt" download="log.txt">
+      ⬇️ Télécharger /log.txt
+    </a>
+
+    <button id="btnLogClear" class="btn btn-block" style="background:#ef4444">🗑️ Vider le journal</button>
+  </div>
+
+  <small class="sub">Attention : “Vider” envoie <code>POST /log/clear</code> et efface le contenu.</small>
+</section>
+
+
+<section class="card">
+  <h2 class="title">🔒 Accès & Point d’accès</h2>
+  <div class="kv">
+    <div>Viewer (écran) – utilisateur</div><div><input id="viewer_user" /></div>
+    <div>Viewer – mot de passe</div><div><input id="viewer_pass" type="password" placeholder="(laisser vide pour ne pas changer)"/></div>
+
+    <div>Admin – utilisateur</div><div><input id="admin_user" /></div>
+    <div>Admin – mot de passe</div><div><input id="admin_pass" type="password" placeholder="(vide = inchangé)"/></div>
+
+    <div>AP SSID</div><div><input id="ap_ssid" /></div>
+    <div>AP mot de passe</div><div><input id="ap_pass" type="password" placeholder="≥ 8 caractères"/></div>
+    <div>AP canal</div><div><input id="ap_chan" type="number" min="1" max="13" value="1"/></div>
+    <div>AP connexions max</div><div><input id="ap_maxc" type="number" min="1" max="4" value="2"/></div>
+  </div>
+
+  <div class="actions-vertical">
+    <button id="btnLoadAuth" class="btn btn-outline btn-block">↻ Charger</button>
+    <button id="btnSaveAuth" class="btn btn-block">💾 Enregistrer Accès/AP</button>
+  </div>
+  <small class="sub">⚠️ La modification AP redémarre le point d’accès.</small>
+</section>
+
+
+
+<section class="card">
+  <h2 class="title">🧯 Offsets capteurs</h2>
+  <div class="kv">
+    <div>Température BMP280 (°C)</div><div><input id="ofs_t_bmp" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Température DHT22 (°C)</div><div><input id="ofs_t_dht" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Humidité DHT22 (%)</div><div><input id="ofs_h_dht" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Pression BMP280 (hPa)</div><div><input id="ofs_press" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Vent (km/h)</div><div><input id="ofs_wind" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Température SHT40 (°C)</div><div><input id="ofs_t_sht40" type="number" step="0.1" placeholder="0.0"></div>
+  </div>
+  <div class="actions-vertical">
+    <button id="btnLoadOfs" class="btn btn-outline btn-block">↻ Charger</button>
+    <button id="btnSaveOfs" class="btn btn-block">💾 Enregistrer offsets</button>
+  </div>
+  <small class="sub">Les offsets sont appliqués aux valeurs publiées (UI, /data, /status.json, /screen/data.json).</small>
+</section>
+
+
+<section class="card">
+  <h2 class="title">🧹 Réinitialiser min / max</h2>
+  <div class="kv">
+    <div>Portée</div>
+    <div>
+      <select id="resetScope">
+        <option value="day">Min/Max du jour</option>
+        <option value="all">Records “all‑time”</option>
+        <option value="both" selected>Les deux</option>
+      </select>
+    </div>
+  </div>
+  <div class="actions-vertical">
+    <button id="btnResetRec" class="btn btn-block" style="background:#ef4444">🗑️ Réinitialiser</button>
+  </div>
+  <small class="sub">Efface les min/max correspondants (NVS pour “all‑time”).</small>
+
+    </section>
+      <!-- Infos de version -->
+      <section class="card">
+        <h2 class="title">ℹ️ Infos système</h2>
+        <div class="kv">
+          <div>Version firmware</div>     <div><code id="fw_version">—</code></div>
+          <div>Version config</div>      <div><code id="config_version">—</code></div>
+          <div>Date de compilation</div> <div><code id="build_date">—</code></div>
+          <div>Config modifiée</div>     <div><code id="config_modified">—</code></div>
+        </div>
+    </section>
+
+
     </div>
   </main>
 
@@ -190,6 +327,7 @@
 
   <!-- Toast de confirmation -->
   <div class="toast" id="toast" style="display:none"></div>
+
 
 
 </body>

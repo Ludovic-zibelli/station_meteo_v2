@@ -1,32 +1,41 @@
+
 #ifndef API_H
 #define API_H
-
 #pragma once
+
 #include <Arduino.h>
 #include <WebServer.h>
 
-// structure pour exposer les mesures
-struct Measurements {
-  float temperature = NAN;
-  float humidite = NAN;
-  float tempbmp280 = NAN;
-  float pression = NAN;
-  float pointderosee = NAN;
-  float tension_solaire = NAN;
-  float tension_batterie = NAN;
-  float anemometre = NAN;
-  float rafale = NAN;
-  float pluviometre = NAN;
-  String datetime = String("");
-  int tpsvie = 0;
+// ========== Snapshot RAM partagé (source unique: main.cpp) ==========
+// (mesures live que main.cpp met à jour toutes les 30 s)
+struct StationSnapshot {
+  // DHT22 / BMP280
+  float temp_dht = NAN;     // "temperature" (DHT22)
+  float hum = NAN;          // "humidite"   (DHT22)
+  float temp_bmp = NAN;     // "tempbmp280" (BMP280)
+  float press_hPa = NAN;    // "pression"
+
+  // Vent / pluie
+  float wind = 0.0f;        // "anemometre" km/h
+  float gust = 0.0f;        // "rafale"     km/h
+  int   dir_deg = -1;       // "girouette"  0..359, -1=unknown
+  float rain_cum = 0.0f;    // "pluviometre" mm
+
+  // Tensions / rosée
+  float batt_v = NAN;       // "tension_batterie"
+  float solar_v = NAN;      // "tension_solaire"
+  float dew = NAN;          // "pointderosee"
+
+  // Date/heure lisible + horodatage ms de l'échantillon
+  char  datetime[20] = {0}; // "YYYY-MM-DD HH:MM:SS"
+  unsigned long now_ms = 0; // millis au moment de la mesure
 };
 
-extern Measurements g_measurements;
+// Variable globale définie dans main.cpp (et utilisée dans api.cpp)
+extern StationSnapshot g_snap;
 
-// Déclaration forward si Modules est défini ailleurs
-struct Modules;
 
-// Structure de cache partagée (doit correspondre à celle définie dans api.cpp)
+// ========== Infos station (déjà utilisées dans ton projet) ==========
 struct StationInfo {
   int id = 0;
   String ville;
@@ -39,78 +48,48 @@ struct StationInfo {
   String user_email;
   bool valid = false;
 
-  // champs wifi ajoutés
+  // Wi‑Fi (mis à jour localement)
   int wifi_rssi = 0;    // dBm
   int wifi_bars = 0;    // 0..4
   int wifi_percent = 0; // 0..100
 };
 
-// variable définie dans api.cpp
 extern StationInfo g_stationInfo;
 
-// Flag global pour indiquer qu'une OTA est en cours (défini dans main.cpp)
+// Flag OTA (défini dans main.cpp)
 extern volatile bool otaInProgress;
 
-// Fonctions exposées (implémentées dans api.cpp)
+
+// ========== API : fonctions exposées ==========
 void setupLocalStationApiHandler(WebServer &server);
 void maybeRefreshStationInfo();
 bool fetchStationInfoFromRemote();
 void startStationInfoBackgroundTask();
 
-bool sendLatestEtatStationMeteoToApi();
+// Envois (payloads construits en RAM uniquement)
 bool sendLatestRowToApi();
+bool sendEtatCapteursToApi();
+bool sendLatestEtatStationMeteoToApi();
 
-bool sendEtatCapteursToApi(
-    const Modules& mods,
-    int etat_dht22, int etat_bmp280, int etat_pluvio, int etat_girou, int etat_anemo, int ghost,
-    String logDateBmp280, String logBmp280,
-    String logDateDht22, String logDht22,
-    String logDateGirou, String logGirou,
-    String logDateTension, String logTension,
-    String logDateAnemo, String logAnemo,
-    String logDatePluvio, String logPluvio
-);
+// Recharge la config API (NVS d’abord, fallback DB si vide — implémenté dans api.cpp)
+void apiRefreshConfigFromDb();
 
-// Déclaration de la fonction qui envoie les données
-void envoyerDonneesAPI(
-    float tempDHT22,
-    float tempBMP280,
-    float humidite,
-    float pression,
-    int lumiere,
-    float anemometre,
-    int girouette,
-    float pluviometre,
-    String pointRosee,
-    unsigned long tpsvie
-);
+// Constructions JSON RAM-only
+String buildStationJsonPayload();        // /api/localStationInfo
+String buildStationJsonPayloadStrict();  // /stationdirect (strict)
 
-// construit le JSON de la station et retourne la string (utilise g_stationInfo + g_measurements)
-String buildStationJsonPayload();
+// Derniers retours d’envoi
+struct PushResult {
+  int code = 0;             // code HTTP (ou négatif si erreur locale)
+  String body;              // corps de réponse
+  unsigned long ts_ms = 0;  // timestamp millis de l’envoi
+  String endpoint;          // URL appelée
+};
+extern PushResult g_lastPushRow;   // dernier /stationdirect
+extern PushResult g_lastPushEtat;  // dernier /etatstationmeteo
 
-// dernier retour d'envoi vers l'API distante
 extern int g_lastPushHttpCode;
 extern String g_lastPushHttpBody;
 extern unsigned long g_lastPushMillis;
 
-struct PushResult {
-  int code = 0;          // code HTTP (ou négatif pour erreur locale)
-  String body = String();
-  unsigned long ts_ms = 0; // timestamp du push (millis)
-  String endpoint = String(); // endpoint distant (pour info)
-};
-
-extern PushResult g_lastPushRow;   // pour sendLatestRowToApi()
-extern PushResult g_lastPushEtat;  // pour sendEtatCapteursToApi()
-
-bool sendLatestRowToApi();
-bool sendEtatCapteursToApi();
-bool sendLatestEtatStationMeteoToApi();
-void apiRefreshConfigFromDb();
-
-// Payload strict pour /stationdirect (aligné sur Postman)
-String buildStationJsonPayloadStrict();
-
-
-
-#endif
+#endif // API_H
