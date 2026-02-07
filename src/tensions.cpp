@@ -1,37 +1,39 @@
 #include <Arduino.h>
 #include "tensions.h"
 
-// Définitions des constantes et des pins
-const float R1_solar = 100000.0;
-const float R2_solar = 47000.0;
-const float correctionFactorSolar = (R1_solar + R2_solar) / R2_solar;
-const int solarPin = 35;
+// === Défs "extern" attendues par tensions.h (mêmes noms & types) ===
+// Solaire (haut/bas) : adapte si tes valeurs réelles diffèrent
+const float R1_solar = 100000.0f;     // 100 kΩ
+const float R2_solar =  47000.0f;     // 47 kΩ
+const float correctionFactorSolar = (R1_solar + R2_solar) / R2_solar;   // ≈ 3.1277
+const int   solarPin = 35;
 
-const float R1 = 220000.0;
-const float R2 = 100000.0;
-const float correctionFactor = (R1 + R2) / R2;
-const int analogPin = 34;
+// Batterie (haut/bas) : 200k/100k -> facteur = 3.0 (si tu as vraiment 220k, remets 220000.0f)
+const float R1 = 200000.0f;           // 200 kΩ   <-- mets 220000.0f si ton montage est 220k/100k
+const float R2 = 100000.0f;           // 100 kΩ
+const float correctionFactor = (R1 + R2) / R2;                           // 3.0 par défaut
+const int   analogPin = 34;
+
+// === Calibration fine (gain + offset), optionnelle ===
+// Laisse 1.0 / 0.0 d'abord, puis ajuste kSolar/kBatt d'après ton multimètre.
+static float kSolar = 1.0f, oSolar = 0.0f;
+static float kBatt  = 1.0f, oBatt  = 0.0f;
+
+// Lecture moyenne calibrée (ADC en mV) -> V au pin -> V en amont du diviseur -> gain/offset
+static float readVoltDiv_mV(int pin, float factor, float k, float o) {
+  analogSetPinAttenuation(pin, ADC_11db);   // FS ~ 3.6 V, calibré pour analogReadMilliVolts
+  const int N = 16;
+  uint32_t acc = 0;
+  for (int i = 0; i < N; ++i) { acc += analogReadMilliVolts(pin); delay(2); }
+  float v_adc = (acc / (float)N) / 1000.0f; // V au pin ADC après diviseur
+  float v_in  = v_adc * factor;             // V avant diviseur
+  return v_in * k + o;                      // calibration fine
+}
 
 float solaire() {
-    int adcValueSolar = analogRead(solarPin);
-    float voltageSolar = (adcValueSolar * 3.3) / 4095.0; // Convertit en volts
-    voltageSolar *= correctionFactorSolar; // Ajuste pour le diviseur de tension
-
-    Serial.print("Tension du panneau solaire: ");
-    Serial.print(voltageSolar);
-    Serial.println(" V");
-
-    return voltageSolar;
+  return readVoltDiv_mV(solarPin, correctionFactorSolar, kSolar, oSolar);
 }
 
 float batterie() {
-    int adcValue = analogRead(analogPin);
-    float voltage = (adcValue * 3.3) / 4095.0; // Convertit en volts
-    voltage *= correctionFactor; // Ajuste pour le diviseur de tension
-
-    Serial.print("Tension de la batterie: ");
-    Serial.print(voltage);
-    Serial.println(" V");
-
-    return voltage;
+  return readVoltDiv_mV(analogPin, correctionFactor,       kBatt,  oBatt);
 }

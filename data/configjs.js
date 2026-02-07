@@ -388,3 +388,88 @@ document.getElementById('btnResetRec').onclick = async ()=>{
   if (!r.ok) return alert('Erreur reset');
   alert('Min/Max réinitialisés.');
 };
+
+
+// Bouton "Relancer BMP280"
+on('btnBmpReinit', 'click', async ()=>{
+  try {
+    const r = await fetch('/sensor/bmp280/reinit', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    toast(j.ok ? 'BMP280 réinitialisé ✅' : 'Réinitialisation BMP280 : échec', !!j.ok);
+  } catch (e) {
+    console.error('bmp reinit error:', e);
+    toast('Erreur réinit BMP280: ' + e.message, false);
+  }
+});
+
+
+on('btnBmpReinit', 'click', async ()=>{
+  try {
+    const r = await fetch('/sensor/bmp280/reinit', { cache: 'no-store' });
+    const j = r.ok ? await r.json() : { ok:false };
+    toast(j.ok ? 'BMP280 réinitialisé ✅' : 'Réinitialisation BMP280 : échec', !!j.ok);
+    if (j.ok) { try { await loadConfig(); } catch(_){} }  // ← recharge les états
+  } catch (e) {
+    toast('Erreur réinit BMP280: ' + e.message, false);
+  }
+});
+
+
+
+async function jget(url)  { const r = await fetch(url,  {cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.json(); }
+async function jpost(url, data) {
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body: new URLSearchParams(data)});
+  if(!r.ok) throw new Error(r.status);
+  return r.headers.get('content-type')?.includes('json') ? r.json() : r.text();
+}
+
+async function refreshBmpDiag(){
+  const s = await jget('/status.json');   // conf/state
+  const d = await jget('/data');          // live avec bmp_status/bmp_bad_streak
+
+  document.getElementById('bmp_addr').textContent = s.conf?.bmp280_addr ?? '—';
+
+  const status = d.bmp_status ?? null;
+  const badge  = document.getElementById('bmp_status_badge');
+  const map = {
+    1:  ['OK','bg-success'],
+    [-1]:['NAN','bg-warning'],
+    [-2]:['ID','bg-danger'],
+    [-3]:['BUS','bg-danger'],
+    [-4]:['RESET','bg-info'],
+  };
+  const ent = map[status] ?? ['?','bg-secondary'];
+  badge.className = 'badge ' + ent[1];
+  badge.textContent = ent[0];
+
+  document.getElementById('bmp_streak').textContent = d.bmp_bad_streak ?? 0;
+
+  // offsets
+  const o = await jget('/config/offsets');
+  document.getElementById('ofs_t_bmp').value = (o.t_bmp ?? 0).toFixed(1);
+  document.getElementById('ofs_press').value = (o.press ?? 0).toFixed(1);
+}
+
+document.getElementById('frm_offsets').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const t_bmp = document.getElementById('ofs_t_bmp').value;
+  const press = document.getElementById('ofs_press').value;
+  await jpost('/config/offsets.save', { t_bmp, press });
+  alert('Offsets enregistrés');
+  refreshBmpDiag();
+});
+
+document.getElementById('btn_bmp_softreset').addEventListener('click', async ()=>{
+  try {
+    await fetch('/sensor/bmp280/softreset', { method:'POST' });
+    setTimeout(refreshBmpDiag, 1500); // le temps que le soft-reset s’applique
+  } catch(e) {
+    alert('Soft reset échec: ' + e);
+  }
+});
+
+// initial & refresh
+refreshBmpDiag();
+setInterval(refreshBmpDiag, 5000);

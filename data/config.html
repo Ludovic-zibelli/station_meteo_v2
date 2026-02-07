@@ -127,6 +127,7 @@
 
         <div class="actions-vertical">
         <button id="btnSaveModules" class="btn btn-block">💾 Enregistrer modules</button>
+        <button id="btnBmpReinit"   class="btn btn-outline btn-block">↻ Relancer BMP280</button>
         </div>
         <small class="sub">Ces cases mappent la route <code>/config/modules</code>.</small>
 
@@ -315,9 +316,35 @@
           <div>Date de compilation</div> <div><code id="build_date">—</code></div>
           <div>Config modifiée</div>     <div><code id="config_modified">—</code></div>
         </div>
+        <div class="card-header"><strong>BMP280</strong></div>
+      <div class="card-body">
+        <div class="row g-2">
+          <div class="col-12 col-md-4">
+            <div>Adresse I²C&nbsp;: <code id="bmp_addr">—</code></div>
+            <div>Statut&nbsp;: <span id="bmp_status_badge" class="badge bg-secondary">?</span></div>
+            <div>Erreurs consécutives&nbsp;: <span id="bmp_streak">0</span></div>
+          </div>
+          <div class="col-12 col-md-8">
+            <form id="frm_offsets" class="row g-2">
+              <div class="col-6 col-md-3">
+                <label class="form-label">Offset Temp (°C)</label>
+                <input type="number" step="0.1" class="form-control" id="ofs_t_bmp">
+              </div>
+              <div class="col-6 col-md-3">
+                <label class="form-label">Offset Press (hPa)</label>
+                <input type="number" step="0.1" class="form-control" id="ofs_press">
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-sm btn-primary">Enregistrer offsets</button>
+                <button type="button" id="btn_bmp_softreset" class="btn btn-sm btn-warning ms-2">
+                  Soft reset capteur
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
     </section>
-
-
     </div>
   </main>
 

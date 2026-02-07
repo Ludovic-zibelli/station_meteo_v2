@@ -151,6 +151,14 @@ static void saveCounterToNvs() {
 
 int activation_envoi_api = 0; //1 = envoi des données à l'API activé, 0 = désactivé
 
+// --- Sanity-check BMP280 ---
+static inline bool saneBMP(float tC, float p_hPa) {
+  // Plages nominales BMP280 : T [-40; +85] °C, P [300; 1100] hPa
+  return (!isnan(tC) && tC > -40.0f && tC < 85.0f) &&
+         (!isnan(p_hPa) && p_hPa > 300.0f && p_hPa < 1100.0f);
+}
+static uint8_t bmpBadStreak = 0;  // compteur d’échecs consécutifs
+
 //variable donnees capteurs
 //BMP280
 float temp1;
@@ -202,6 +210,8 @@ int module_sht40 = 0; //1 = SHT40 activé, 0 = désactivé
 
 // Flag global pour indiquer qu'une OTA est en cours (utilisé par api.cpp)
 volatile bool otaInProgress = false;
+
+static volatile bool bmpReinitReq = false;
 
 // Variables de planification
 
@@ -649,6 +659,10 @@ void handleData() {
   json += ",\"wifi_bars\":" + String(bars);
   json += ",\"compteur\":" + String((unsigned long)compteur);
 
+  // status capteurs (pour le front, 0=OK, 1=KO, 2=non lu, 3=désactivé)
+  json += ",\"bmp_status\":" + String(etat_bmp280);
+  json += ",\"bmp_bad_streak\":" + String((unsigned)bmpBadStreak);
+
   // Min/Max jour + All‑time (structures existantes)
   addNum(json, "t_min_day", ST_tempExt.minDay, 1);
   addNum(json, "t_max_day", ST_tempExt.maxDay, 1);
@@ -968,7 +982,7 @@ void handleStatusJson() {
 
   // 4) Confs affichées (API + NTP)
   JsonObject jc = j.createNestedObject("conf");
-  jc["bmp280_addr"] = "0x76";
+  jc["bmp280_addr"] = String("0x") + String(g_bmp_addr, HEX); // 0x76 ou 0x77
   jc["sht40_addr"]  = "0x44";
   jc["dht22_gpio"]  = 4;
   jc["anemo_gpio"]  = 18;
@@ -1780,45 +1794,30 @@ server.on("/config.save", HTTP_POST, []()  {
 
 // --- Endpoint JSON live des tensions ---
 server.on("/adc/live", HTTP_GET, []() {
-  // Pendant OTA, on peut choisir de répondre 503 (optionnel)
-  if (otaInProgress) {
-    server.send(503, "application/json", "{\"error\":\"OTA in progress\"}");
-    return;
-  }
-
-  // Lire la tension "à l'ADC" (point milieu du diviseur)
   float vAdcSolar = readAdcAveraged(SOLAR_PIN, 3.6f, 12);
   float vAdcBatt  = readAdcAveraged(BATTERY_PIN, 3.6f, 12);
+  int   rawSolar  = analogRead(SOLAR_PIN);
+  int   rawBatt   = analogRead(BATTERY_PIN);
 
-  // Appliquer les facteurs de correction basés sur tes résistances
-  // Solaire: R1=100k (haut), R2=47k (bas) -> facteur ≈ (100k+47k)/47k = 3.1277
-  // Batterie: D'après ton schéma: Rhaut=200k, Rbas=100k -> facteur = (200k+100k)/100k = 3.0
-  const float kSolar = (100000.0f + 47000.0f) / 47000.0f;
-  const float kBatt  = (200000.0f + 100000.0f) / 100000.0f;  // adapte à 220k/100k si nécessaire
-
-  float vSolar = vAdcSolar * kSolar;
-  float vBatt  = vAdcBatt  * kBatt;
-
-  // Exposer aussi les valeurs brutes (utile pour la calibration)
-  int rawSolar = analogRead(SOLAR_PIN);
-  int rawBatt  = analogRead(BATTERY_PIN);
+  const float kSolar = (100000.0f + 47000.0f) / 47000.0f; // 3.1277 (si montage prévu)
+  const float kBatt  = (200000.0f + 100000.0f) / 100000.0f; // 3.0 (si 200k/100k)
 
   StaticJsonDocument<256> doc;
   JsonObject solar = doc.createNestedObject("solar");
-  solar["raw"] = rawSolar;
-  solar["v_adc"] = vAdcSolar;      // tension mesurée au pin (après diviseur)
-  solar["v_corr"] = vSolar;        // tension calculée côté source
+  solar["raw"]   = rawSolar;
+  solar["v_adc"] = vAdcSolar;
+  solar["v_corr"]= vAdcSolar * kSolar;
+  solar["sat"]   = (rawSolar >= 4090);  // ⚠️ butée
 
   JsonObject batt = doc.createNestedObject("batt");
-  batt["raw"] = rawBatt;
+  batt["raw"]   = rawBatt;
   batt["v_adc"] = vAdcBatt;
-  batt["v_corr"] = vBatt;
+  batt["v_corr"]= vAdcBatt * kBatt;
+  batt["sat"]   = (rawBatt >= 4090);
 
-  String out;
-  serializeJson(doc, out);
+  String out; serializeJson(doc, out);
   server.send(200, "application/json", out);
 });
-
 
 server.on("/adc.html", HTTP_GET, []() {
   const char* path = "/adc.html";
@@ -2066,6 +2065,12 @@ server.on("/screen/full.json", HTTP_GET, []() {
   server.send(200, "application/json", out);
 });
 
+
+server.on("/sensor/bmp280/softreset", HTTP_POST, []()  {
+  if (!requireAdminAuth()) return;          // protège l'action
+  bmpReinitReq = true;
+  server.send(202, "application/json", "{\"accepted\":true}");
+});
 
 // ElegantOTA integration commented out to avoid conflicts with ArduinoOTA
 // ElegantOTA.begin(&server);
@@ -2382,14 +2387,57 @@ void loop() {
       etat_anemo = 0; vitesse = 0; rafale = 0;
     }
 
-    // BMP280
-    if (module_bmp280 == 1 && bmp_ok) {
-      readBMP280(temp1, pression, altitude);
-      etat_bmp280 = (!isnan(temp1) && !isnan(pression)) ? 1 : 0;
-      if (!bmp_ok) bmp_ok = initBMP280();  // tentative de relance
+    // --- BMP280 avec sanity-check & auto-réinit douce ---
+    if (module_bmp280 == 1) {
+      if (bmp_ok) {
+        readBMP280(temp1, pression, altitude);
+      } else {
+        bmp_ok = initBMP280();
+      }
+
+      if (!saneBMP(temp1, pression)) {
+        bmpBadStreak++;
+        etat_bmp280 = BMP_NAN;  // <-- code d'état explicite
+
+        app_logf("[BMP280] Lecture invalide t=%.2fC p=%.2fhPa (streak=%u) — ignore",
+                temp1, pression, bmpBadStreak);
+
+        // ↩️ REMPLACE l'ancien Wire.end/begin par un SOFT RESET
+        if (bmpBadStreak >= 2) {
+          etat_bmp280 = BMP_RESETTING;
+          bool sr = bmp_soft_reset();          // <-- nouveau helper
+          bmp_ok = initBMP280();               // ré-init propre de ta lib
+          app_logf("[BMP280] Soft reset %s, re-init -> %s",
+                  sr ? "OK" : "KO", bmp_ok ? "OK" : "KO");
+          bmpBadStreak = 0;
+        }
+
+        // ⚠️ Ne PAS alimenter g_snap ici -> on garde la dernière "bonne" valeur
+      } else {
+        bmpBadStreak = 0;
+        etat_bmp280 = BMP_OK;
+
+        // Appliquer offsets et publier dans le snapshot UNIQUEMENT si OK
+        float temp1_corr = temp1 + ofs.t_bmp;
+        float press_corr = pression + ofs.press;
+        g_snap.temp_bmp  = temp1_corr;
+        g_snap.press_hPa = press_corr;
+      }
     } else {
-      etat_bmp280 = 0; temp1 = pression = altitude = 0;
+      etat_bmp280 = 0;
+      temp1 = pression = altitude = 0;
     }
+
+    //Reinitialisation douce du BMP280 si demandé via l'API (bmpReinitReq)
+    if (bmpReinitReq) {
+      bmpReinitReq = false;
+      etat_bmp280 = BMP_RESETTING;
+      bool sr = bmp_soft_reset();               // helpers de ta lib
+      bmp_ok = initBMP280();
+      app_logf("[BMP280] Soft reset %s, re-init -> %s",
+              sr ? "OK" : "KO", bmp_ok ? "OK" : "KO");
+    }
+
 
     // DHT22 (lire seulement si activé et prêt)
     if (module_dht22 == 1 && isDHTReady()) {
@@ -2512,8 +2560,13 @@ void loop() {
       // --- NO-DB: remplir le snapshot RAM
       g_snap.temp_dht = temp2_corr;                     // DHT22
       g_snap.hum = (float)humiditer_corr;               // DHT22
-      g_snap.temp_bmp = temp1_corr;                     // BMP280
-      g_snap.press_hPa = press_corr;
+      
+      // NE publier BMP que si etat_bmp280 == BMP_OK
+      if (etat_bmp280 == BMP_OK) {
+        g_snap.temp_bmp  = temp1_corr;
+        g_snap.press_hPa = press_corr;
+      }
+
 
       g_snap.wind = vent_corr;
       g_snap.gust = rafale_corr;

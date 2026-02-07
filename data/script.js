@@ -226,8 +226,8 @@ async function chargerDonnees() {
   function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
 
   // Ajuste les bornes de visualisation (adapter à ton cas réel)
-  const MAX_SOLAR = 18.0;   // tension max solaire attendue (côté source)
-  const MAX_BATT  = 4.5;    // tension max batterie
+  const MAX_SOLAR = 9.5;   // tension max solaire attendue (côté source)
+  const MAX_BATT  = 4.2;    // tension max batterie
 
   async function poll(){
     try{
