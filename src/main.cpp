@@ -2502,9 +2502,16 @@ void loop() {
   updateStat(ST_humExt,  (float)humiditer_corr, nowEpoch);
   updateStat(ST_press,   press_corr,  nowEpoch);
 
+  
+  // NE publier BMP que si la lecture est saine
+  if (etat_bmp280 == BMP_OK /* ou == 1 */) {
+    g_snap.temp_bmp  = temp1_corr;
+    g_snap.press_hPa = press_corr;
+  }
+
   // --- Snapshot RAM pour l'UI / JSON (corrigé) ---
-  g_snap.temp_bmp  = temp1_corr;
-  g_snap.hum       = (float)humiditer_corr;
+  //g_snap.temp_bmp  = temp1_corr;
+  //g_snap.hum       = (float)humiditer_corr;
   g_snap.press_hPa = press_corr;
   g_snap.wind      = vent_corr;
   g_snap.gust      = rafale_corr;
