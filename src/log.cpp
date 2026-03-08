@@ -7,6 +7,25 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+
+#include <Arduino.h>
+
+#include <FS.h>
+#include <time.h>
+
+
+
+// Chemin du fichier de log du jour : "/log-YYYYMMDD.txt"
+String log_daily_path();
+
+// Purger les fichiers de log plus anciens que 'keepDays' (ex: 14)
+bool log_purge_old(uint16_t keepDays);
+
+// Lire N derniers octets d'un fichier spécifique (ex: "/log-20260203.txt")
+// Retourne false si fichier absent ou lecture impossible.
+bool log_read_file(const char* path, String& out, size_t maxBytes);
+
+
 static const char* s_path = "/log.txt";
 static uint16_t    s_maxLines = 100;
 static uint32_t    s_flushMs  = 60000;        // période par défaut : 60 s
@@ -43,13 +62,17 @@ static void give() { if (s_mutex) xSemaphoreGive(s_mutex); }
 
 // Trim — garde les N dernières lignes (opération au flush uniquement)
 static void trim_file_keep_last_n() {
-  File f = SPIFFS.open(s_path, "r");
+  String p = log_daily_path();
+  File f = SPIFFS.open(p, "r");
   if (!f) return;
+
   String all = f.readString();
   f.close();
 
   int count = 0;
-  for (size_t i = 0; i < all.length(); ++i) if (all[i] == '\n') ++count;
+  for (size_t i = 0; i < all.length(); ++i) {
+    if (all[i] == '\n') ++count;
+  }
   s_lineCount = count; // mise à jour du compteur
 
   if (count <= s_maxLines) return;
@@ -59,7 +82,8 @@ static void trim_file_keep_last_n() {
   while (toSkip > 0 && pos < all.length()) {
     if (all[pos++] == '\n') --toSkip;
   }
-  File w = SPIFFS.open(s_path, "w");
+
+  File w = SPIFFS.open(p, "w");
   if (!w) return;
   w.print(all.substring(pos));
   w.close();
@@ -71,8 +95,10 @@ static void trim_file_keep_last_n() {
 static void flush_locked() {
   if (s_buf.isEmpty()) return;
 
-  File f = SPIFFS.open(s_path, FILE_APPEND);
-  if (!f) f = SPIFFS.open(s_path, "w");
+
+  String p = log_daily_path();
+  File f = SPIFFS.open(p, FILE_APPEND);
+  if (!f) f = SPIFFS.open(p, "w");
   if (f) {
     f.print(s_buf);
     f.close();
@@ -95,19 +121,27 @@ void log_init(const char* path, uint16_t maxLines) {
 
   // Monte SPIFFS (une fois)
   SPIFFS.begin(true);
-  if (!s_mutex) s_mutex = xSemaphoreCreateMutex();
-
-  // Crée le fichier si absent et initialise s_lineCount
-  if (!SPIFFS.exists(s_path)) {
-    File f = SPIFFS.open(s_path, "w");
-    if (f) f.close();
-    s_lineCount = 0;
-  } else {
-    File f = SPIFFS.open(s_path, "r");
+  
+  {
+    String p = log_daily_path();
+    if (!SPIFFS.exists(p)) {
+      File f = SPIFFS.open(p, "w"); if (f) f.close();
+    }
+    // Compte lignes du fichier du jour (si tu veux continuer à limiter le nb de lignes locales)
+    File f = SPIFFS.open(p, "r");
     s_lineCount = 0;
     while (f && f.available()) if (f.read() == '\n') ++s_lineCount;
     if (f) f.close();
   }
+
+  // Purge des vieux fichiers (> keepDays)
+  log_purge_old(14);
+
+  s_lastFlush = millis();
+
+  if (!s_mutex) s_mutex = xSemaphoreCreateMutex();
+
+
   s_lastFlush = millis();
 }
 
@@ -143,7 +177,9 @@ void app_logf(const char* fmt, ...) {
 bool log_read(String& out, size_t maxBytes) {
   out = "";
   if (!take()) return false;
-  File f = SPIFFS.open(s_path, "r");
+    
+  String p = log_daily_path();
+  File f = SPIFFS.open(p, "r");
   if (!f) { give(); return false; }
 
   size_t sz = f.size();
@@ -156,9 +192,10 @@ bool log_read(String& out, size_t maxBytes) {
 }
 
 void log_clear() {
-  if (!take()) return;
-  if (SPIFFS.exists(s_path)) SPIFFS.remove(s_path);
-  File f = SPIFFS.open(s_path, "w");
+  if (!take()) return; 
+  String p = log_daily_path();
+  if (SPIFFS.exists(p)) SPIFFS.remove(p);
+  File f = SPIFFS.open(p, "w"); 
   if (f) f.close();
   s_buf = "";
   s_lineCount = 0;
@@ -178,4 +215,145 @@ void log_flush() {
   if (!take()) return;
   flush_locked();
   give();
+}
+
+// === Helpers internes pour /etatstationmeteo ===
+static String currentTzOffsetIso() {
+  // Renvoie "+HH:MM" ou "-HH:MM" (ex: +01:00)
+  struct tm ti;
+  if (getLocalTime(&ti, 0)) {
+    char zbuf[8] = {0};  // ex: "+0100"
+    strftime(zbuf, sizeof(zbuf), "%z", &ti);
+    // insère ':' -> "+01:00"
+    String s(zbuf);
+    if (s.length() == 5) s = s.substring(0,3) + ":" + s.substring(3);
+    return s;
+  }
+  // défaut : UTC
+  return String("+00:00");
+}
+
+static bool parse_log_line(const String& line, String& outDateIsoTz, String& outMsg) {
+  // Format attendu : "YYYY-MM-DD HH:MM:SS message..."
+  if (line.length() < 21) return false;
+  // extrait datetime (19 chars) + espace
+  String d = line.substring(0, 19);        // "YYYY-MM-DD HH:MM:SS"
+  if (d[4] != '-' || d[7] != '-' || d[10] != ' ' || d[13] != ':' || d[16] != ':')
+    return false;
+  String msg = line.substring(20);
+  msg.trim();
+  // Convertit en "YYYY-MM-DDTHH:MM:SS+HH:MM" (timezone local)
+  String tz = currentTzOffsetIso();
+  outDateIsoTz = d.substring(0,10) + "T" + d.substring(11) + tz;
+  outMsg = msg;
+  return true;
+}
+
+bool log_find_last_by_tag(const char* tag, String& outDateIsoTz, String& outMsg) {
+  outDateIsoTz = "";
+  outMsg = "";
+  if (!tag || !*tag) return false;
+
+  // Lisons seulement la fin du fichier (ex: 16 Ko) pour ne pas bloquer
+  const size_t TAIL = 16 * 1024;
+
+  if (!take()) return false;
+  String p = log_daily_path();
+  File f = SPIFFS.open(p, "r");
+  if (!f) { give(); return false; }
+
+  size_t sz = f.size();
+  if (sz == 0) { f.close(); give(); return false; }
+  if (sz > TAIL) f.seek(sz - TAIL);
+
+  // On lit ligne par ligne et on mémorise la dernière qui matche
+  String last;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    if (line.indexOf(tag) >= 0) last = line;
+  }
+  f.close();
+  give();
+
+  if (last.length() == 0) return false;
+  return parse_log_line(last, outDateIsoTz, outMsg);
+}
+
+
+// --- Format nom fichier du jour ---
+static String daily_path_for(time_t t) {
+  struct tm ti;
+  if (t > 0 && localtime_r(&t, &ti)) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "/log-%04d%02d%02d.txt",
+             ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday);
+    return String(buf);
+  }
+  // Fallback si horloge pas à l'heure
+  return String("/log.txt");
+}
+
+String log_daily_path() {
+  time_t now = time(nullptr);
+  return daily_path_for(now);
+}
+
+bool log_read_file(const char* path, String& out, size_t maxBytes) {
+  out = "";
+  if (!path || !*path) return false;
+  if (!take()) return false;
+  File f = SPIFFS.open(path, "r");
+  if (!f) { give(); return false; }
+  size_t sz = f.size();
+  if (maxBytes && sz > maxBytes) f.seek(sz - maxBytes);
+  out.reserve((maxBytes && sz > maxBytes) ? maxBytes : sz);
+  out = f.readString();
+  f.close();
+  give();
+  return true;
+}
+
+static bool parse_date_from_logname(const char* name, struct tm& out) {
+  // attend "/log-YYYYMMDD.txt"
+  // positions: 0:/ 1:l 2:o 3:g 4:- 5:Y 6:Y 7:Y 8:Y 9:M 10:M 11:D 12:D ...
+  if (!name) return false;
+  String s(name);
+  if (!s.startsWith("/log-") || !s.endsWith(".txt") || s.length() < 17) return false;
+  int Y = s.substring(5, 9).toInt();
+  int M = s.substring(9, 11).toInt();
+  int D = s.substring(11, 13).toInt();
+  if (Y < 2000 || M < 1 || M > 12 || D < 1 || D > 31) return false;
+  memset(&out, 0, sizeof(out));
+  out.tm_year = Y - 1900;
+  out.tm_mon  = M - 1;
+  out.tm_mday = D;
+  out.tm_hour = 0; out.tm_min = 0; out.tm_sec = 0;
+  return true;
+}
+
+bool log_purge_old(uint16_t keepDays) {
+  time_t now = time(nullptr);
+  if (now <= 0) return false; // horloge pas prête -> on reporte
+  time_t cutoff = now - (time_t)keepDays * 24 * 3600;
+
+  File root = SPIFFS.open("/");
+  if (!root) return false;
+
+  size_t removed = 0;
+  while (true) {
+    File f = root.openNextFile();
+    if (!f) break;
+    String name = f.name();
+    f.close();
+
+    struct tm d;
+    if (parse_date_from_logname(name.c_str(), d)) {
+      time_t t = mktime(&d); // local time OK
+      if (t > 0 && t < cutoff) {
+        SPIFFS.remove(name);
+        ++removed;
+      }
+    }
+  }
+  return true;
 }

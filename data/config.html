@@ -73,6 +73,7 @@
         <div class="actions-vertical">
         <button id="setTimeBtn" class="btn btn-block">🕘 Mettre l’horloge à l’heure (NTP → RTC)</button>
         <button id="refreshStatusBtn" class="btn btn-outline btn-block">↻ Rafraîchir statut</button>
+        <button id="btnRebootEsp" class="btn btn-danger btn-block">♻️ Redémarrer l’ESP32</button>
         <div>Dernier relevé</div> <div><span id="lastTs">--</span></div>
         </div>
         <small class="sub" id="ntpResult">Résultat : —</small>
@@ -244,6 +245,23 @@
   </div>
 
   <small class="sub">Attention : “Vider” envoie <code>POST /log/clear</code> et efface le contenu.</small>
+  
+  <h2 class="title">📁 Archives de logs</h2>
+
+    <div class="actions-vertical">
+      <button id="btnLogsList"  class="btn btn-outline btn-block">↻ Lister les fichiers</button>
+      <button id="btnLogsPurge" class="btn btn-block" style="background:#ef4444">🧹 Purger &gt; 14 jours</button>
+    </div>
+
+    <div class="table-wrap" style="margin-top:8px">
+      <table class="table table-compact table-striped">
+        <thead>
+        <tr><th>Fichier</th><th>Taille (o)</th><th>Action</th></tr>
+        </thead>
+        <tbody id="logsTableBody"></tbody>
+      </table>
+    </div>
+
 </section>
 
 
@@ -306,6 +324,30 @@
   </div>
   <small class="sub">Efface les min/max correspondants (NVS pour “all‑time”).</small>
 
+  <section class="card">
+    <h2 class="title">🛡️ Watchdog I²C</h2>
+    <div class="kv">
+      <div>Etat</div>
+      <div><span id="i2c_state_badge" class="badge bg-secondary">?</span></div>
+
+      <div>Activé</div>
+      <div>
+        <label class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="i2c_wd_enable">
+        </label>
+      </div>
+
+      <div>Dernier succès</div>
+      <div><span id="i2c_last_ok">—</span> ms</div>
+
+      <div>Récupérations consécutives</div>
+      <div><span id="i2c_recover_count">—</span></div>
+
+      <div>Reboots watchdog</div>
+      <div><span id="i2c_wd_reboots">—</span></div>
+    </div>
+  </section>
+    
     </section>
       <!-- Infos de version -->
       <section class="card">
@@ -345,6 +387,27 @@
         </div>
       </div>
     </section>
+    
+    <section class="card">
+        <h2 class="title">🔌 Diagnostic alimentation</h2>
+
+        <div class="kv">
+            <div>Dernier reset (core0/core1)</div>
+            <div><span id="diag_reset"></span></div>
+
+            <div>Vcc min/max (V)</div>
+            <div><span id="diag_vcc"></span></div>
+
+            <div>Brown-out détectés</div>
+            <div><span id="diag_bo"></span></div>
+
+            <div>Free heap au boot</div>
+            <div><span id="diag_heap"></span></div>
+        </div>
+
+        <button id="btnDiagRefresh" class="btn btn-outline btn-block">↻ Rafraîchir diagnostic</button>
+    </section>
+
     </div>
   </main>
 

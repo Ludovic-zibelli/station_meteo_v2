@@ -1,3 +1,10 @@
+
+#pragma once
+#ifdef ARDUINO
+#include <Arduino.h>
+#endif
+
+
 #ifndef TENSION_H
 #define TENSION_H
 
@@ -15,5 +22,11 @@ extern const int analogPin;
 // Déclarations des fonctions
 float solaire();
 float batterie();
+
+
+void  tensions_begin_async(uint32_t period_ms = 1000);  // lance la tâche d’échantillonnage
+float solaire_cached();                                  // valeur cache (instantané)
+float batterie_cached();                                 // valeur cache (instantané)
+
 
 #endif // TENSION_H

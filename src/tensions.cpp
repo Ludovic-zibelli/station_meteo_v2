@@ -37,3 +37,44 @@ float solaire() {
 float batterie() {
   return readVoltDiv_mV(analogPin, correctionFactor,       kBatt,  oBatt);
 }
+
+// ---------- Échantillonnage asynchrone & cache ----------
+static TaskHandle_t s_tensionTask = nullptr;
+static volatile float s_solar_cached = NAN;
+static volatile float s_batt_cached  = NAN;
+static volatile uint32_t s_period_ms = 1000;
+
+static void tensions_task(void*){
+  for(;;){
+    // 1) Mesures “riches” (tes fonctions existantes avec moyenne/atténuation)
+    float vsol  = solaire();
+    float vbatt = batterie();
+
+    // 2) Mettre à jour les caches (section critique très courte)
+    s_solar_cached = vsol;
+    s_batt_cached  = vbatt;
+
+    // 3) Attente coopérative
+    vTaskDelay(pdMS_TO_TICKS(s_period_ms));
+  }
+}
+
+void tensions_begin_async(uint32_t period_ms){
+  s_period_ms = period_ms ? period_ms : 1000;
+  if (s_tensionTask) return; // déjà lancée
+  xTaskCreatePinnedToCore(tensions_task, "tensions",
+                          4096, nullptr, 1, &s_tensionTask, 1);
+}
+
+float solaire_cached(){
+  float v = s_solar_cached;
+  // fallback initial si pas encore d’échantillon
+  if (isnan(v)) v = solaire(); // 1ère fois seulement
+  return v;
+}
+
+float batterie_cached(){
+  float v = s_batt_cached;
+  if (isnan(v)) v = batterie();
+  return v;
+}

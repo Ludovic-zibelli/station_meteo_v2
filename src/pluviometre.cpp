@@ -28,8 +28,8 @@ void initPluviometre() {
     pinMode(HALL_SENSOR_PIN, INPUT_PULLUP); // pull-up interne (prévoir 10k externe si câble long)
     // Si la sortie du A3144E passe à LOW quand l'aimant est présent -> FALLING
     attachInterrupt(digitalPinToInterrupt(HALL_SENSOR_PIN), isrPluviometre, FALLING);
-    Serial.println("Pluviomètre initialisé sur D19 (interrupt + anti-rebond).");
-   app_logf("Pluviomètre initialisé sur D19 (interrupt + anti-rebond).");
+    Serial.println("[Girou] Pluviomètre initialisé sur D19 (interrupt + anti-rebond).");
+   app_logf("[Girou] Pluviomètre initialisé sur D19 (interrupt + anti-rebond).");
 }
 
 void gestionPluviometre() {

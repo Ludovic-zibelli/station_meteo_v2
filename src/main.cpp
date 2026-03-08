@@ -18,6 +18,10 @@
 //Stockage des données
 #include "SPIFFS.h"
 
+#include "esp_system.h"
+#include "rom/rtc.h"
+
+
 
 //Serveur web
 #include <WiFi.h>
@@ -128,8 +132,103 @@ void sendWithCache(const String& path) {
   server.streamFile(f, contentTypeFor(path));
   f.close();
 }
-
+void setRTCFromNTP();
 //Variable fonctionement programme
+// ===== Watchdog I²C : déclarations globales =====
+#ifndef I2C_SDA_PIN
+#define I2C_SDA_PIN 21
+#endif
+#ifndef I2C_SCL_PIN
+#define I2C_SCL_PIN 22
+#endif
+
+static volatile bool g_i2cWdEnabled       = true;     // toggle runtime
+static unsigned long g_lastI2CokMs        = 0;        // dernier succès I²C
+static unsigned long g_lastI2CcheckMs     = 0;        // anti-spam
+static int           g_i2cRecoverAttempts = 0;        // tentatives consécutives
+static uint32_t      g_i2cWdReboots       = 0;        // compte reboots watchdog
+
+static const unsigned long I2C_WATCHDOG_MS  = 5000UL;   // délai "pas de succès" avant recovery
+static const int           I2C_MAX_RECOVER   = 3;        // au-delà -> reboot
+static const unsigned long I2C_WD_GRACE_MS   = 30000UL;  // 30 s de grâce après boot
+
+// Marquer un succès I²C (à appeler après lecture BMP/RTC valide)
+static inline void noteI2C_OK() {
+  g_lastI2CokMs = millis();
+  g_i2cRecoverAttempts = 0;
+}
+
+// 9 clocks sur SCL + STOP pour libérer SDA si un esclave bloque la ligne
+static void i2c_bus_clear() {
+  Wire.end();
+  pinMode(I2C_SCL_PIN, INPUT_PULLUP);
+  pinMode(I2C_SDA_PIN, INPUT_PULLUP);
+  delayMicroseconds(5);
+
+  for (int i = 0; i < 9; ++i) {
+    pinMode(I2C_SCL_PIN, OUTPUT);
+    digitalWrite(I2C_SCL_PIN, LOW);
+    delayMicroseconds(5);
+    pinMode(I2C_SCL_PIN, INPUT); // remonte via pull-up
+    delayMicroseconds(5);
+  }
+
+  // STOP : SDA low -> SCL high -> SDA high
+  pinMode(I2C_SDA_PIN, OUTPUT);  digitalWrite(I2C_SDA_PIN, LOW);  delayMicroseconds(5);
+  pinMode(I2C_SCL_PIN, INPUT);                                 delayMicroseconds(5);
+  pinMode(I2C_SDA_PIN, INPUT);                                 delayMicroseconds(5);
+}
+
+// Séquence recovery : clear + Wire + soft reset BMP + RTC->NTP si invalide
+static bool i2c_recover_sequence() {
+  app_logf("[I2C] Recovery sequence: START");
+  i2c_bus_clear();
+
+  Wire.begin();
+  delay(5);
+
+  // Soft reset BMP280 + re-init
+  #ifdef bmp_write8
+  bmp_write8(0xE0, 0xB6);
+  delay(10);
+  #endif
+  bool ok_bmp = initBMP280();
+  app_logf("[I2C] BMP280 reinit -> %s", ok_bmp ? "OK" : "KO");
+
+  // RTC : si invraisemblable, on remet à l'heure via NTP
+  DateTime n = rtc.now();
+  if (n.year() < 2024 || n.month() == 0 || n.day() == 0) {
+    app_logf("[I2C] RTC invalide -> setRTCFromNTP()");
+    setRTCFromNTP();
+  }
+  
+  bool ok = ok_bmp; // critère minimal de succès
+  app_logf("[I2C] Recovery sequence: %s", ok ? "OK" : "KO");
+  return ok;
+}
+
+//Contrôle de l'alimentation 
+//Declaration des variables globales pour la gestion de l'alimentation
+// ---- Diagnostic alimentation : "Vcc 5V" proxy ----
+// Utilise la tension solaire comme indicateur d'alim (ou batterie() si tu préfères)
+float lireVCC5() {
+  // si tu veux monitorer le panneau : 
+  float v = solaire_cached();
+  // ou la batterie :
+  // float v = batterie_cached();
+  if (isnan(v) || v <= 0.0f) return 0.0f;
+  return v;
+}
+static uint32_t diag_reset_reason_core0 = 0;
+static uint32_t diag_reset_reason_core1 = 0;
+static float diag_vcc_min = 100.0f;
+static float diag_vcc_max = 0.0f;
+static uint32_t diag_brownout_count = 0;
+static uint32_t diag_last_reboot_ms = 0;
+static uint32_t diag_free_heap_boot = 0;
+
+// prototype ADC interne 5V si tu mesures déjà le Vcc
+extern float lireVCC5();  // OU tension_solaire si tu veux
 
 // Compteur runtime (monotone), persistant via NVS
 static uint32_t compteur = 0;
@@ -149,7 +248,7 @@ static void saveCounterToNvs() {
   prefsCtr.end();
 }
 
-int activation_envoi_api = 0; //1 = envoi des données à l'API activé, 0 = désactivé
+int activation_envoi_api = 1; //1 = envoi des données à l'API activé, 0 = désactivé
 
 // --- Sanity-check BMP280 ---
 static inline bool saneBMP(float tC, float p_hPa) {
@@ -517,11 +616,11 @@ void applyModuleChange(const Modules& oldM, const Modules& newM) {
     if (newM.anemo) {
       anemo_init(ANEMO_PIN, 0.6667f, 0.0f, 1, 2000, 100.0f);
       pinMode(ANEMO_PIN, INPUT_PULLUP);
-      Serial.println(F("[CFG] Anémomètre ACTIVÉ"));
-      app_logf("[CFG] Anémomètre ACTIVÉ");
+      Serial.println(F("[ANEMO] Anémomètre ACTIVÉ"));
+      app_logf("[ANEMO] Anémomètre ACTIVÉ");
     } else {
-      Serial.println(F("[CFG] Anémomètre DÉSACTIVÉ"));
-      app_logf("[CFG] Anémomètre DÉSACTIVÉ");
+      Serial.println(F("[ANEMO] Anémomètre DÉSACTIVÉ"));
+      app_logf("[ANEMO] Anémomètre DÉSACTIVÉ");
     }
   }
   
@@ -623,47 +722,66 @@ static inline void dbUnlock() {
   if (g_dbMutex) xSemaphoreGive(g_dbMutex);
 }
 
+// --- Helpers JSON sûrs ---
+// Retourne "null" si v est NaN/Inf, sinon le nombre formaté avec 'dec' décimales.
+static inline String jsonNumberOrNull(float v, int dec = 2) {
+  if (isnan(v) || isinf(v)) return "null";
+  return String(v, dec);
+}
+
+// Retourne "null" si s est vide / invalide, sinon la chaîne JSON-quotée.
+static inline String jsonStringOrNull(const char* s) {
+  if (!s || !*s) return "null";
+  // Ici g_snap.datetime est déjà ASCII "YYYY-MM-DD HH:MM:SS" donc pas besoin d'escape
+  return String("\"") + s + "\"";
+}
 
 
 void handleData() {
   if (otaInProgress) { server.send(503, "application/json", "{\"error\":\"OTA in progress\"}"); return; }
 
-  String json = "{";
-  // Mesures courantes (depuis le snapshot RAM)
-  json += "\"temperature\":"   + String(g_snap.temp_dht, 2) + ",";
-  json += "\"humidite\":"      + String(g_snap.hum, 2) + ",";
-  json += "\"pression\":"      + String(g_snap.press_hPa, 2) + ",";
-  json += "\"tempbmp280\":"    + String(g_snap.temp_bmp, 2) + ",";
+  String json; json.reserve(2048);
+  json = "{";
 
-  json += "\"datetime\":\""    + String(g_snap.datetime) + "\",";
-  json += "\"tpsvie\":" + String((unsigned long)(millis() / 1000UL)) + ",";
-  json += "\"pointderosee\":"  + String(g_snap.dew, 2) + ",";
+  // 1) Mesures courantes (depuis le snapshot RAM)
+  json += "\"temperature\":";   json += jsonNumberOrNull(g_snap.temp_dht, 2);
+  json += ",\"humidite\":";     json += jsonNumberOrNull(g_snap.hum, 2);
 
-  json += "\"anemometre\":"    + String(g_snap.wind, 2) + ",";
-  json += "\"pluviometre\":"   + String(g_snap.rain_cum, 2) + ",";
-  json += "\"rafale\":"        + String(g_snap.gust, 2);
+  // BMP280 (déjà clampé côté snapshot : on sécurise encore la sérialisation)
+  json += ",\"tempbmp280\":";   json += jsonNumberOrNull(g_snap.temp_bmp, 2);
+  json += ",\"pression\":";     json += jsonNumberOrNull(g_snap.press_hPa, 2);
 
-  // UI calculés côté RAM
-  json += ",\"moyenne10min\":" + String(windAvg10min(), 2);
-  json += ",\"direction\":"    + String(max(0, g_snap.dir_deg)) + ",";
-  json += "\"pluieHeure\":"    + String(rainHourMm(), 2) + ",";
-  json += "\"pluieJour\":"     + String(rainDayMm(), 2) + ",";
-  json += "\"pluieSemaine\":"  + String(rainWeekMm(), 2);
+  // Datetime : null si vide
+  json += ",\"datetime\":";     json += jsonStringOrNull(g_snap.datetime);
 
-  // Wi‑Fi
+  json += ",\"tpsvie\":";       json += String((unsigned long)(millis() / 1000UL));
+  json += ",\"pointderosee\":"; json += jsonNumberOrNull(g_snap.dew, 2);
+
+  json += ",\"anemometre\":";   json += jsonNumberOrNull(g_snap.wind, 2);
+  json += ",\"pluviometre\":";  json += jsonNumberOrNull(g_snap.rain_cum, 2);
+  json += ",\"rafale\":";       json += jsonNumberOrNull(g_snap.gust, 2);
+
+  // 2) KPI calculés côté RAM
+  json += ",\"moyenne10min\":"; json += jsonNumberOrNull(windAvg10min(), 2);
+  json += ",\"direction\":";    json += String(max(0, g_snap.dir_deg));  // int sûr
+  json += ",\"pluieHeure\":";   json += jsonNumberOrNull(rainHourMm(), 2);
+  json += ",\"pluieJour\":";    json += jsonNumberOrNull(rainDayMm(), 2);
+  json += ",\"pluieSemaine\":"; json += jsonNumberOrNull(rainWeekMm(), 2);
+
+  // 3) Wi‑Fi
   int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
   int pct  = rssiToPercent(rssi);
   int bars = pctToBars(pct);
-  json += ",\"wifi_rssi\":" + String(rssi);
-  json += ",\"wifi_percent\":" + String(pct);
-  json += ",\"wifi_bars\":" + String(bars);
-  json += ",\"compteur\":" + String((unsigned long)compteur);
+  json += ",\"wifi_rssi\":";    json += String(rssi);
+  json += ",\"wifi_percent\":"; json += String(pct);
+  json += ",\"wifi_bars\":";    json += String(bars);
+  json += ",\"compteur\":";     json += String((unsigned long)compteur);
 
-  // status capteurs (pour le front, 0=OK, 1=KO, 2=non lu, 3=désactivé)
-  json += ",\"bmp_status\":" + String(etat_bmp280);
-  json += ",\"bmp_bad_streak\":" + String((unsigned)bmpBadStreak);
+  // 4) État BMP pour l’UI
+  json += ",\"bmp_status\":";       json += String((int)etat_bmp280);
+  json += ",\"bmp_bad_streak\":";   json += String((unsigned)bmpBadStreak);
 
-  // Min/Max jour + All‑time (structures existantes)
+  // 5) Min/Max jour + All‑time (tes helpers addNum/addIntOrNull gèrent déjà NaN -> null)
   addNum(json, "t_min_day", ST_tempExt.minDay, 1);
   addNum(json, "t_max_day", ST_tempExt.maxDay, 1);
   addNum(json, "t_min_all", ST_tempExt.minAll, 1);
@@ -689,7 +807,7 @@ void handleData() {
   addNum(json, "vs_min_all", ST_solar.minAll, 2);
   addNum(json, "vs_max_all", ST_solar.maxAll, 2);
 
-  // Rafales + directions
+  // 6) Rafales + directions
   addNum(json, "gust_max_day", GUST_maxDay, 1);
   addIntOrNull(json, "gust_dir_day", GUST_dirDay);
   addNum(json, "gust_max_all", GUST_maxAll, 1);
@@ -697,7 +815,11 @@ void handleData() {
 
   json += "}";
   server.send(200, "application/json", json);
+
+  // DEBUG (temporaire) : décommente pour voir la chaîne brute
+  // app_logf("[/data] %s", json.c_str());
 }
+
 
 
 // --- Gestion Wi‑Fi STA + AP sécurisé WPA2 ---
@@ -993,7 +1115,11 @@ void handleStatusJson() {
   jc["api_enabled"] = (activation_envoi_api != 0);
   jc["ntp_server"]  = g_ntp_server;
   jc["timezone"]    = g_timezone;
-
+  jc["i2c_wd_enabled"]  = g_i2cWdEnabled;
+  jc["i2c_last_ok_ms"]  = (uint32_t)g_lastI2CokMs;
+  jc["i2c_recover_count"] = g_i2cRecoverAttempts;
+  jc["i2c_wd_reboots"]  = (uint32_t)g_i2cWdReboots;
+  jc["i2c_state"]       = ((millis() - g_lastI2CokMs) > I2C_WATCHDOG_MS ? "warning" : "ok");
   // 5) Réseau
   JsonObject jn = j.createNestedObject("net");
   jn["ssid"]          = cfg.ssid_wifi;
@@ -1135,6 +1261,9 @@ static inline void sendNoCacheHeaders(WebServer& srv) {
   srv.sendHeader("Pragma", "no-cache");
 }
 
+
+
+
 // Réinitialisation NVS Auth/AP aux valeurs par défaut (pour debug)
 //static void resetAuthApToDefaults() {
 //  prefsAuth.begin("auth", /*rw=*/false); prefsAuth.clear(); prefsAuth.end();
@@ -1147,6 +1276,16 @@ static inline void sendNoCacheHeaders(WebServer& srv) {
 void setup() {
  
   Serial.begin(115200);
+
+  RESET_REASON r0 = rtc_get_reset_reason(0);
+  RESET_REASON r1 = rtc_get_reset_reason(1);
+  diag_reset_reason_core0 = r0;
+  diag_reset_reason_core1 = r1;
+  diag_free_heap_boot = ESP.getFreeHeap();
+  diag_last_reboot_ms = millis();
+
+app_logf("[BOOT] Reset reason core0=%d core1=%d", r0, r1);
+app_logf("[BOOT] Free heap at boot: %u", diag_free_heap_boot);
   
   //resetAuthApToDefaults();
 
@@ -1224,6 +1363,18 @@ void setup() {
 
   Wire.begin();
   
+    // ---- SOFT RESET BMP280 AU DEMARRAGE ----
+  bmp_write8(0xE0, 0xB6);   // Soft reset officiel BMP280
+  delay(10);                // Attendre le reset interne
+  bmp_ok = initBMP280();    // Ré‑initialise complètement le capteur
+
+  if (!bmp_ok) {
+      Serial.println("[BMP280] Soft reset: KO");
+      app_logf("[BMP280] Soft reset: KO");
+  } else {
+      Serial.println("[BMP280] Soft reset: OK");
+      app_logf("[BMP280] Soft reset: OK");
+  }
   // --- Time/NTP au boot ---
   loadNtpTzFromNvs();                   // récupère ce qui a été enregistré précédemment
   applyTimeConfig(g_timezone, g_ntp_server);  // applique au système (TZ + serveur NTP)
@@ -1234,6 +1385,23 @@ void setup() {
     //while (1);
   }
   
+  // ---- VERIFICATION RTC ET REMISE A L’HEURE AUTOMATIQUE ----
+  DateTime nowRTC = rtc.now();
+
+  // Si l'heure est invalide : DS1307 => 2000-01-01 après un freeze I2C
+  if (nowRTC.year() < 2024) {       // seuil arbitraire pour détecter une date cassée
+      Serial.println("[RTC] Heure invalide -> Remise à l'heure NTP.");
+      app_logf("[RTC] Heure invalide -> Remise à l'heure NTP.");
+
+      setRTCFromNTP();              // ta fonction déjà existante
+      delay(200);
+
+      // Vérification
+      DateTime check_rtc = rtc.now();
+      Serial.printf("[RTC] Nouvelle heure : %04d-%02d-%02d %02d:%02d:%02d\n",
+          check_rtc.year(), check_rtc.month(), check_rtc.day(),
+          check_rtc.hour(), check_rtc.minute(), check_rtc.second());
+  }
 
     // Initialisation du capteur BMP280
   if (!initBMP280()) 
@@ -1245,6 +1413,7 @@ void setup() {
   }else
   {
       bmp_ok = true;
+      noteI2C_OK();
       Serial.println(F("BMP280 initialized successfully."));
       app_logf("BMP280 initialized successfully.");
   }
@@ -1312,6 +1481,8 @@ void setup() {
 
   // Option conso/perf (au choix) :
   WiFi.setSleep(false); // perf réseau (écran 30 s OK) ; passer true si tu veux économiser
+  
+  tensions_begin_async(1000); // 1 échantillon par seconde suffit largement
 
   
 // --- Modules + activation API : préférer NVS, fallback unique DB ---
@@ -1902,7 +2073,39 @@ server.on("/log/tail", HTTP_GET,  []() {
   server.send(200, "text/plain; charset=utf-8", tail.length() ? tail : "(journal vide)");
 });
 
+// ---- Liste des fichiers de logs (archives) ----
+server.on("/logs/list", HTTP_GET, []() {
+  String out = "[";
+  bool first = true;
+  File root = SPIFFS.open("/");
+  while (true) {
+    File f = root.openNextFile();
+    if (!f) break;
+    String name = f.name();
+    size_t size = f.size();
+    f.close();
 
+    if (name.startsWith("/log-") && name.endsWith(".txt")) {
+      if (!first) out += ",";
+      first = false;
+      out += "{\"name\":\"" + name + "\",\"size\":" + String((unsigned)size) + "}";
+    }
+  }
+  out += "]";
+  server.send(200, "application/json", out);
+});
+
+// ---- Télécharger un log précis ----
+// GET /logs/get?file=/log-20260203.txt
+server.on("/logs/get", HTTP_GET, []() {
+  if (!server.hasArg("file")) { server.send(400, "text/plain", "file param missing"); return; }
+  String file = server.arg("file");
+  if (!file.startsWith("/")) file = "/" + file;
+  if (!SPIFFS.exists(file)) { server.send(404, "text/plain", "not found"); return; }
+  String content;
+  if (!log_read_file(file.c_str(), content, 0)) { server.send(500, "text/plain", "read error"); return; }
+  server.send(200, "text/plain; charset=utf-8", content);
+});
 
 // --- Données simplifiées pour l'écran (ESP8266) : protégé "viewer" ---
 server.on("/screen/data.json", HTTP_GET, []() {
@@ -2072,6 +2275,37 @@ server.on("/sensor/bmp280/softreset", HTTP_POST, []()  {
   server.send(202, "application/json", "{\"accepted\":true}");
 });
 
+server.on("/reboot", HTTP_POST, []() {
+    server.send(200, "application/json", "{\"ok\":true}");
+    delay(200);
+    ESP.restart();
+});
+
+// --- Toggle Watchdog I²C (admin) ---
+server.on("/i2c/wd", HTTP_POST, []() {
+  if (!requireAdminAuth()) return;
+  if (server.hasArg("enable")) {
+    String v = server.arg("enable");
+    g_i2cWdEnabled = (v == "1" || v == "true" || v == "on");
+  }
+  String out = String("{\"enabled\":") + (g_i2cWdEnabled ? "true" : "false") + "}";
+  server.send(200, "application/json", out);
+});
+
+server.on("/diag/power", HTTP_GET, []() {
+    String json = "{";
+
+    json += "\"reset_core0\":" + String(diag_reset_reason_core0) + ",";
+    json += "\"reset_core1\":" + String(diag_reset_reason_core1) + ",";
+    json += "\"vcc_min\":" + String(diag_vcc_min,2) + ",";
+    json += "\"vcc_max\":" + String(diag_vcc_max,2) + ",";
+    json += "\"brownout_count\":" + String(diag_brownout_count) + ",";
+    json += "\"free_heap_boot\":" + String(diag_free_heap_boot) + ",";
+    json += "\"last_reboot_ms\":" + String(diag_last_reboot_ms);
+
+    json += "}";
+    server.send(200, "application/json", json);
+});
 // ElegantOTA integration commented out to avoid conflicts with ArduinoOTA
 // ElegantOTA.begin(&server);
 // ElegantOTA.onStart(...) { ... }
@@ -2234,6 +2468,17 @@ void loop() {
     server.handleClient();      // OK
     ArduinoOTA.handle();        // doit rester réactif
 
+    float v = lireVCC5();
+    if (v > 0.01f) {
+      if (v < diag_vcc_min) diag_vcc_min = v;
+      if (v > diag_vcc_max) diag_vcc_max = v;
+
+      // si tu gardes solaire() : adapte ce seuil à ton usage
+      if (v < 4.65f) {
+        diag_brownout_count++;
+        app_logf("[POWER] LOW Vcc detecté : %.2f V (proxy solaire)", v);
+      }
+    }
     
     // Reconnexion STA non bloquante si déconnecté
     if (!g_staConnected && (long)(millis() - g_nextReconnectMs) >= 0) {
@@ -2391,6 +2636,7 @@ void loop() {
     if (module_bmp280 == 1) {
       if (bmp_ok) {
         readBMP280(temp1, pression, altitude);
+        noteI2C_OK();  // marquer un succès I2C
       } else {
         bmp_ok = initBMP280();
       }
@@ -2503,12 +2749,6 @@ void loop() {
   updateStat(ST_press,   press_corr,  nowEpoch);
 
   
-  // NE publier BMP que si la lecture est saine
-  if (etat_bmp280 == BMP_OK /* ou == 1 */) {
-    g_snap.temp_bmp  = temp1_corr;
-    g_snap.press_hPa = press_corr;
-  }
-
   // --- Snapshot RAM pour l'UI / JSON (corrigé) ---
   //g_snap.temp_bmp  = temp1_corr;
   //g_snap.hum       = (float)humiditer_corr;
@@ -2569,10 +2809,17 @@ void loop() {
       g_snap.hum = (float)humiditer_corr;               // DHT22
       
       // NE publier BMP que si etat_bmp280 == BMP_OK
-      if (etat_bmp280 == BMP_OK) {
-        g_snap.temp_bmp  = temp1_corr;
-        g_snap.press_hPa = press_corr;
-      }
+   
+    if (etat_bmp280 == BMP_OK) {
+
+        if (!isnan(temp1_corr) && temp1_corr > -45.0f && temp1_corr < 85.0f) {
+            g_snap.temp_bmp = temp1_corr;
+        }
+
+        if (!isnan(press_corr) && press_corr > 300.0f && press_corr < 1100.0f) {
+            g_snap.press_hPa = press_corr;
+        }
+    }
 
 
       g_snap.wind = vent_corr;
@@ -2650,6 +2897,42 @@ void loop() {
     }
 
   log_tick();
+      // ---- Watchdog I²C : supervision non agressive ----
+{
+  const unsigned long now = millis();
+
+  // Conditions d'inhibition : disabled, OTA, période de grâce
+  if (!g_i2cWdEnabled || otaInProgress || now < I2C_WD_GRACE_MS) {
+    // ne rien faire
+  } else {
+    // Pas de succès I²C depuis trop longtemps ?
+    if ((now - g_lastI2CokMs) > I2C_WATCHDOG_MS && (now - g_lastI2CcheckMs) > 500UL) {
+      g_lastI2CcheckMs = now;
+      app_logf("[I2C] Aucun succès I2C depuis %lu ms -> tentative recovery",
+               (unsigned long)(now - g_lastI2CokMs));
+
+      bool ok = i2c_recover_sequence();
+      if (ok) {
+        noteI2C_OK();
+      } else {
+        g_i2cRecoverAttempts++;
+
+        // IMPORTANT : si on n’a JAMAIS eu de succès depuis le boot, on n’ira pas au reboot
+        const bool neverOK = (g_lastI2CokMs == 0);
+
+        app_logf("[I2C] Recovery KO (tentative %d/%d, neverOK=%d)",
+                 g_i2cRecoverAttempts, I2C_MAX_RECOVER, neverOK);
+
+        if (!neverOK && g_i2cRecoverAttempts >= I2C_MAX_RECOVER) {
+          app_logf("[I2C] Trop d'échecs -> reboot ESP32");
+          g_i2cWdReboots++;
+          delay(150);
+          ESP.restart();
+        }
+      }
+    }
+  }
+}
   delay(100);
 }
 

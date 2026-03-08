@@ -29,11 +29,11 @@ void initDHT() {
     float temp = dht.readTemperature();
     if (!isnan(temp)) {
         dhtStatus = true;
-        Serial.println("DHT22 initialisé avec succès.");
+        Serial.println("[DHT22] initialisé avec succès.");
         app_logf("DHT22 initialisé avec succès.\n");
     } else {
         dhtStatus = false;
-        Serial.println("Échec de l'initialisation du DHT22.");
+        Serial.println("[DHT22] Échec de l'initialisation du DHT22.");
         app_logf("Échec de l'initialisation du DHT22.\n");
     }
 

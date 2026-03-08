@@ -55,8 +55,8 @@ bool initBMP280() {
   } else if (bmp.begin(0x77)) {
     g_bmp_addr = 0x77;
   } else {
-    Serial.println(F("BMP280 sensor not found!"));
-    app_logf("BMP280 sensor not found!");
+    Serial.println(F("[BMP280] sensor not found!"));
+    app_logf("[BMP280] sensor not found!");
     return false;
   }
 

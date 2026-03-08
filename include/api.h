@@ -5,6 +5,8 @@
 
 #include <Arduino.h>
 #include <WebServer.h>
+#include <stdint.h>
+
 
 // ========== Snapshot RAM partagé (source unique: main.cpp) ==========
 // (mesures live que main.cpp met à jour toutes les 30 s)

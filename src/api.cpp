@@ -12,6 +12,7 @@
 #include "db_read.h"     // fallback unique si NVS vide
 #include "log.h"
 #include "version.h"
+#include "bmp280.h"
 
 // ---------- Déclarations externes depuis main.cpp ----------
 extern int degret; // direction live 0..359
@@ -279,17 +280,33 @@ String buildStationJsonPayloadStrict() {
   if (g_snap.datetime[0]) doc["dateheure"] = ensureMillisZ(toISO8601Z(String(g_snap.datetime)));
   else                    doc["dateheure"] = nowISOZ();
 
-  // Mesures (types alignés)
-  if (!isnan(g_snap.temp_dht))   doc["tempdh22"]     = roundN(g_snap.temp_dht, 1);
-  if (!isnan(g_snap.temp_bmp))   doc["tempbmp280"]   = roundN(g_snap.temp_bmp, 1);
-  if (!isnan(g_snap.hum))        doc["humidite"]     = (int)roundf(g_snap.hum);     // entier
-  if (!isnan(g_snap.press_hPa))  doc["pression"]     = roundN(g_snap.press_hPa, 1);
-  if (!isnan(g_snap.wind))       doc["anemometre"]   = roundN(g_snap.wind, 1);
-  if (!isnan(g_snap.rain_cum))   doc["pluviometre"]  = roundN(g_snap.rain_cum, 2);
-  // Girouette int 0..359
-  doc["girouette"] = normDegInt((float)degret);
-  // Point de rosée attendu STRING "12,34"
-  if (!isnan(g_snap.dew))        doc["pointRose"]    = frenchDecimalStr(g_snap.dew, 2);
+
+  // --- Mesures (l'API veut des nombres réels, pas NaN, et certaines clés obligatoires)
+  float tempdh22   = isnan(g_snap.temp_dht)   ? 0.0f : roundN(g_snap.temp_dht, 1);
+  float tempbmp    = (etat_bmp280 == BMP_OK && !isnan(g_snap.temp_bmp)) ? roundN(g_snap.temp_bmp, 1) : 0.0f;
+  int   humi       = isnan(g_snap.hum)        ? 0    : (int)roundf(g_snap.hum);
+  float pressOut   = (etat_bmp280 == BMP_OK && !isnan(g_snap.press_hPa)) ? roundN(g_snap.press_hPa, 1) : 0.0f;
+  float vent       = isnan(g_snap.wind)       ? 0.0f : roundN(g_snap.wind, 1);
+  float pluieCum   = isnan(g_snap.rain_cum)   ? 0.0f : roundN(g_snap.rain_cum, 2);
+  int   gir        = (degret >= 0 && degret < 360) ? degret : 0;
+  float lumiere = isnan(g_snap.solar_v) ? 0.0f : roundN(g_snap.solar_v, 2);
+
+  // Optionnel : borne pression si tu veux éviter des zéros (ex: forcer à 1013.2 hPa si out-of-range)
+  if (pressOut < 800.0f || pressOut > 1100.0f) pressOut = 1013.2f;
+
+  // Affectations
+  doc["tempdh22"]    = tempdh22;
+  doc["tempbmp280"]  = tempbmp;
+  doc["humidite"]    = humi;
+  doc["pression"]    = pressOut;
+  doc["lumiere"] = lumiere;
+  doc["anemometre"]  = vent;
+  doc["pluviometre"] = pluieCum;
+  doc["girouette"]   = gir;
+
+  // point de rosée attendu STRING "12,34"
+  doc["pointRose"] = isnan(g_snap.dew) ? "0,00" : frenchDecimalStr(roundN(g_snap.dew, 2));
+
   // tpsvie attendu STRING
   doc["tpsvie"] = String((unsigned long)(millis() / 1000UL));
 
@@ -473,6 +490,46 @@ bool sendLatestEtatStationMeteoToApi() {
   // Tensions depuis snapshot RAM
   if (!isnan(g_snap.solar_v)) doc["tensionSolaire"]  = g_snap.solar_v;
   if (!isnan(g_snap.batt_v))  doc["tensionBatterie"] = g_snap.batt_v;
+
+  // ---- Logs capteurs (dernière ligne correspondante) ----
+  String d, m;
+
+  // BMP280
+  if (log_find_last_by_tag("[BMP280]", d, m)) {
+    doc["logDateBmp280"] = d;
+    doc["logBmp280"]     = m;
+  }
+
+  // DHT22
+  if (log_find_last_by_tag("[DHT22]", d, m)) {
+    doc["logDateDht22"] = d;
+    doc["logDht22"]     = m;
+  }
+
+  // Girouette (essaie "Girouette" ou "VANE")
+  if (log_find_last_by_tag("[Girouette]", d, m) || log_find_last_by_tag("[VANE]", d, m)) {
+    doc["logDateGirou"] = d;
+    doc["logGirou"]     = m;
+  }
+
+  // Tension (essaie "tension", "Batterie", "Solaire", "ADC")
+  if (log_find_last_by_tag("[tension]", d, m) || log_find_last_by_tag("[Batterie]", d, m)
+  || log_find_last_by_tag("[Solaire]", d, m) || log_find_last_by_tag("[ADC]", d, m)) {
+    doc["logDateTension"] = d;
+    doc["logTension"]     = m;
+  }
+
+  // Anémomètre (accentué / non accentué)
+  if (log_find_last_by_tag("[ANEMO]", d, m) || log_find_last_by_tag("[ANEMO]", d, m)) {
+    doc["logDateAnemo"] = d;
+    doc["logAnemo"]     = m;
+  }
+
+  // Pluviomètre (accentué / non accentué)
+  if (log_find_last_by_tag("[PLUVIO]", d, m) || log_find_last_by_tag("[PLUVIO]", d, m)) {
+    doc["logDatePluvio"] = d;
+    doc["logPluvio"]     = m;
+  }
 
   String payload; serializeJson(doc, payload);
 

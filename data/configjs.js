@@ -473,3 +473,99 @@ document.getElementById('btn_bmp_softreset').addEventListener('click', async ()=
 // initial & refresh
 refreshBmpDiag();
 setInterval(refreshBmpDiag, 5000);
+
+
+document.addEventListener('DOMContentLoaded', () => {
+  const btnReboot = document.getElementById('btnRebootEsp');
+  if (btnReboot) {
+    btnReboot.addEventListener('click', async () => {
+      if (!confirm('Redémarrer l’ESP32 maintenant ?')) return;
+      try {
+        const r = await fetch('/reboot', { method: 'POST' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        alert('Redémarrage en cours…');
+        setTimeout(() => location.reload(), 4000);
+      } catch (e) {
+        alert('Échec du redémarrage : ' + e.message);
+      }
+    });
+  }
+});
+
+function updateI2Cwatchdog(status) {
+  const badge = document.getElementById('i2c_state_badge');
+  const ena   = document.getElementById('i2c_wd_enable');
+
+  if (status.i2c_state === 'ok') {
+    badge.className = 'badge bg-success';
+    badge.textContent = 'OK';
+  } else {
+    badge.className = 'badge bg-danger';
+    badge.textContent = 'En problème';
+  }
+
+  if (ena) ena.checked = !!status.i2c_wd_enabled;
+
+  setText('i2c_last_ok', status.i2c_last_ok_ms ?? 0);
+  setText('i2c_recover_count', status.i2c_recover_count ?? 0);
+  setText('i2c_wd_reboots', status.i2c_wd_reboots ?? 0);
+}
+
+// toggle
+document.getElementById('i2c_wd_enable')?.addEventListener('change', async (e) => {
+  try {
+    const enable = e.target.checked ? '1' : '0';
+    const r = await fetch('/i2c/wd', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/x-www-form-urlencoded' },
+      body: 'enable=' + enable
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  } catch (err) {
+    alert('Erreur changement Watchdog: ' + err.message);
+  }
+});
+
+
+async function jget(url){ const r=await fetch(url,{cache:'no-store'}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+async function jpost(url,data){ const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data)}); if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); }
+
+async function refreshLogsList(){
+  const body = document.getElementById('logsTableBody');
+  body.innerHTML = '<tr><td colspan="3">Chargement…</td></tr>';
+  try{
+    const files = await jget('/logs/list');
+    if (!Array.isArray(files) || files.length === 0) {
+      body.innerHTML = '<tr><td colspan="3">Aucun fichier d\'archive</td></tr>';
+      return;
+    }
+    body.innerHTML = '';
+    files.sort((a,b)=>a.name.localeCompare(b.name)).reverse();
+    for (const f of files) {
+      const tr = document.createElement('tr');
+      const name = f.name || '';
+      const size = f.size || 0;
+      tr.innerHTML =
+        `<td><code>${name}</code></td>`+
+        `<td>${size}</td>`+
+        `<td><a class="btn btn-sm btn-outline" href="/logs/get?file=${encodeURIComponent(name)}" target="_blank" rel="noopener">⬇️ Télécharger</a></td>`;
+      body.appendChild(tr);
+    }
+  }catch(e){
+    body.innerHTML = `<tr><td colspan="3">Erreur: ${e.message}</td></tr>`;
+  }
+}
+
+// Liste / purge des fichiers de logs
+on('btnLogsList', 'click', async () => {
+  if (!confirm('Supprimer les fichiers de log de plus de 14 jours ?')) return;
+  try {
+    await jpost('/logs/purge', { days: 14 });
+    refreshLogsList();
+  } catch (e) {
+    alert('Erreur purge: ' + e.message);
+  }
+});
+
+// premier affichage
+refreshLogsList();
