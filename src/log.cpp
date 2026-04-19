@@ -26,7 +26,7 @@ bool log_purge_old(uint16_t keepDays);
 bool log_read_file(const char* path, String& out, size_t maxBytes);
 
 
-static const char* s_path = "/log.txt";
+static String s_path = "/log.txt";
 static uint16_t    s_maxLines = 100;
 static uint32_t    s_flushMs  = 60000;        // période par défaut : 60 s
 static SemaphoreHandle_t s_mutex = nullptr;
@@ -115,7 +115,7 @@ static void flush_locked() {
 }
 
 void log_init(const char* path, uint16_t maxLines) {
-  s_path = path ? path : "/log.txt";
+  s_path = path && *path ? String(path) : String("/log.txt");
   s_maxLines = maxLines ? maxLines : 100;
   s_buf.reserve(1024);
 
@@ -157,7 +157,7 @@ void log_set_flush_period(uint32_t flushMs) {
 
 void log_line(const String& msg) {
   // Pas d'echo Serial pour éviter blocages — à réactiver si besoin
-  // Serial.println(msg);
+  Serial.println(msg);
 
   String line = isoNow() + " | " + msg + "\n";
 
@@ -283,14 +283,25 @@ bool log_find_last_by_tag(const char* tag, String& outDateIsoTz, String& outMsg)
 // --- Format nom fichier du jour ---
 static String daily_path_for(time_t t) {
   struct tm ti;
-  if (t > 0 && localtime_r(&t, &ti)) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "/log-%04d%02d%02d.txt",
-             ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday);
+  // Ne créer un fichier journal daté que si l'heure est raisonnable
+  // (évite /log-19700101.txt quand le RTC/NTP n'est pas encore initialisé).
+  if (t >= 1609459200 && localtime_r(&t, &ti) && ti.tm_year >= 120) {
+    String base = s_path;
+    int slash = base.lastIndexOf('/');
+    int dot = base.lastIndexOf('.');
+    String stem = base;
+    String ext = "";
+    if (dot > slash) {
+      ext = base.substring(dot);
+      stem = base.substring(0, dot);
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s-%04d%02d%02d%s",
+             stem.c_str(), ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday, ext.c_str());
     return String(buf);
   }
-  // Fallback si horloge pas à l'heure
-  return String("/log.txt");
+  // Fallback si horloge pas à l'heure ou date invalide
+  return s_path;
 }
 
 String log_daily_path() {

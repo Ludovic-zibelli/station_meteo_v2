@@ -250,6 +250,8 @@ static void saveCounterToNvs() {
 
 int activation_envoi_api = 1; //1 = envoi des données à l'API activé, 0 = désactivé
 
+bool firstRun = true; // Pour envoi automatique au premier cycle
+
 // --- Sanity-check BMP280 ---
 static inline bool saneBMP(float tC, float p_hPa) {
   // Plages nominales BMP280 : T [-40; +85] °C, P [300; 1100] hPa
@@ -924,6 +926,10 @@ static void onWiFiEvent(WiFiEvent_t event) {
       g_backoffMs = 2000;
       Serial.printf("[WiFi] STA GOT IP: %s (ch=%d)\n",
                     WiFi.localIP().toString().c_str(), WiFi.channel());
+      if (firstRun) {
+        nextUpdateMs = millis(); // forcer une mise à jour rapide après connexion
+        Serial.println("WiFi connecté : envoi initial programmé");
+      }
       break;
 
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
@@ -1307,11 +1313,11 @@ app_logf("[BOOT] Free heap at boot: %u", diag_free_heap_boot);
   // première ligne
 
   unsigned long nowMs = millis();
-  // ⚡ Pour tester rapidement : première mise à jour DB dans ~2 s
-  nextUpdateMs = nowMs + 2000;
+  // ⚡ Première mise à jour immédiatement au démarrage
+  nextUpdateMs = nowMs;
 
   // Envoi stationdirect 5 s après la mise à jour DB
-  nextDueRow  = nextUpdateMs + 5000;            // ≈ T+7 s
+  nextDueRow  = nextUpdateMs + 5000;            // ≈ T+5 s
 
   // Envoi etatstationmeteo ≈ 60 s après la mise à jour DB
   nextDueEtat = nextUpdateMs + 65000;           // ≈ T+67 s
@@ -1517,6 +1523,7 @@ app_logf("[BOOT] Free heap at boot: %u", diag_free_heap_boot);
   module_bitvie = bootMods.bitvie;
 
   activation_envoi_api = apiActive;
+  Serial.printf("activation_envoi_api chargé: %d\n", activation_envoi_api);
 }
 
 loadOffsetsFromNvs();
@@ -1540,7 +1547,7 @@ server.on("/config", HTTP_GET, []() {
 // Exemple : protéger aussi les postes existants si tu veux
 // server.on("/config.save", HTTP_POST, { if(!requireAdminAuth()) return; ... });
 
-
+  
 // Lire la config Auth/AP (masquée) pour l'UI
 server.on("/config/auth", HTTP_GET, []() {
   if (!requireAdminAuth()) return;
@@ -1768,6 +1775,7 @@ server.on("/config/api", HTTP_POST, []() {
   // checkbox activation
   int api_flag = server.hasArg("api_enabled") ? 1 : 0;
   activation_envoi_api = api_flag;
+  Serial.printf("activation_envoi_api défini à: %d\n", activation_envoi_api);
 
   // Mettre à jour la DB (compat), si tu veux garder :
   updateAppConfig(n);
@@ -2085,7 +2093,7 @@ server.on("/logs/list", HTTP_GET, []() {
     size_t size = f.size();
     f.close();
 
-    if (name.startsWith("/log-") && name.endsWith(".txt")) {
+    if (name.startsWith("/log") && name.endsWith(".txt")) {
       if (!first) out += ",";
       first = false;
       out += "{\"name\":\"" + name + "\",\"size\":" + String((unsigned)size) + "}";
@@ -2641,37 +2649,48 @@ void loop() {
         bmp_ok = initBMP280();
       }
 
-      if (!saneBMP(temp1, pression)) {
-        bmpBadStreak++;
-        etat_bmp280 = BMP_NAN;  // <-- code d'état explicite
-
-        app_logf("[BMP280] Lecture invalide t=%.2fC p=%.2fhPa (streak=%u) — ignore",
-                temp1, pression, bmpBadStreak);
-
-        // ↩️ REMPLACE l'ancien Wire.end/begin par un SOFT RESET
-        if (bmpBadStreak >= 2) {
-          etat_bmp280 = BMP_RESETTING;
-          bool sr = bmp_soft_reset();          // <-- nouveau helper
-          bmp_ok = initBMP280();               // ré-init propre de ta lib
-          app_logf("[BMP280] Soft reset %s, re-init -> %s",
-                  sr ? "OK" : "KO", bmp_ok ? "OK" : "KO");
-          bmpBadStreak = 0;
-        }
-
-        // ⚠️ Ne PAS alimenter g_snap ici -> on garde la dernière "bonne" valeur
-      } else {
+      if (bmp_ok && saneBMP(temp1, pression)) {
         bmpBadStreak = 0;
         etat_bmp280 = BMP_OK;
 
-        // Appliquer offsets et publier dans le snapshot UNIQUEMENT si OK
         float temp1_corr = temp1 + ofs.t_bmp;
         float press_corr = pression + ofs.press;
         g_snap.temp_bmp  = temp1_corr;
         g_snap.press_hPa = press_corr;
+      } else {
+        bmpBadStreak++;
+        etat_bmp280 = bmp_ok ? BMP_NAN : BMP_BUS_BAD;
+
+        temp1 = NAN;
+        pression = NAN;
+        altitude = NAN;
+        g_snap.temp_bmp = NAN;
+        g_snap.press_hPa = NAN;
+
+        app_logf("[BMP280] Lecture invalide t=%.2fC p=%.2fhPa (streak=%u) — ignore",
+                temp1, pression, bmpBadStreak);
+
+        if (bmpBadStreak >= 2) {
+          etat_bmp280 = BMP_RESETTING;
+          bool sr = bmp_soft_reset();
+          bmp_ok = initBMP280();
+          app_logf("[BMP280] Soft reset %s, re-init -> %s",
+                  sr ? "OK" : "KO", bmp_ok ? "OK" : "KO");
+          if (bmp_ok) {
+            bmpBadStreak = 0;
+          }
+        }
+
+        if (!bmp_ok && bmpBadStreak >= 4) {
+          module_bmp280 = 0;
+          app_logf("[BMP280] Désactivé après plusieurs erreurs");
+        }
       }
     } else {
       etat_bmp280 = 0;
-      temp1 = pression = altitude = 0;
+      temp1 = pression = altitude = NAN;
+      g_snap.temp_bmp = NAN;
+      g_snap.press_hPa = NAN;
     }
 
     //Reinitialisation douce du BMP280 si demandé via l'API (bmpReinitReq)
@@ -2845,6 +2864,16 @@ void loop() {
       tCtrSave = millis();
     }
 
+    // Envoi automatique au démarrage si activé
+    if (firstRun && activation_envoi_api == 1 && g_staConnected) {
+      Serial.println("API: envoi automatique au démarrage");
+      log_line("API: envoi automatique au démarrage");
+      pushBusy = true;
+      sendLatestRowToApi();
+      sendLatestEtatStationMeteoToApi();
+      pushBusy = false;
+      firstRun = false;
+    }
 
  }
 

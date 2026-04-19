@@ -74,7 +74,7 @@
         <button id="setTimeBtn" class="btn btn-block">🕘 Mettre l’horloge à l’heure (NTP → RTC)</button>
         <button id="refreshStatusBtn" class="btn btn-outline btn-block">↻ Rafraîchir statut</button>
         <button id="btnRebootEsp" class="btn btn-danger btn-block">♻️ Redémarrer l’ESP32</button>
-        <div>Dernier relevé</div> <div><span id="lastTs">--</span></div>
+        <div>Dernier relevé</div> <div><span id="lastTsNtp">--</span></div>
         </div>
         <small class="sub" id="ntpResult">Résultat : —</small>
       </section>
@@ -292,12 +292,12 @@
 <section class="card">
   <h2 class="title">🧯 Offsets capteurs</h2>
   <div class="kv">
-    <div>Température BMP280 (°C)</div><div><input id="ofs_t_bmp" type="number" step="0.1" placeholder="0.0"></div>
-    <div>Température DHT22 (°C)</div><div><input id="ofs_t_dht" type="number" step="0.1" placeholder="0.0"></div>
-    <div>Humidité DHT22 (%)</div><div><input id="ofs_h_dht" type="number" step="0.1" placeholder="0.0"></div>
-    <div>Pression BMP280 (hPa)</div><div><input id="ofs_press" type="number" step="0.1" placeholder="0.0"></div>
-    <div>Vent (km/h)</div><div><input id="ofs_wind" type="number" step="0.1" placeholder="0.0"></div>
-    <div>Température SHT40 (°C)</div><div><input id="ofs_t_sht40" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Température BMP280 (°C)</div><div><input id="ofs_t_bmp_cfg" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Température DHT22 (°C)</div><div><input id="ofs_t_dht_cfg" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Humidité DHT22 (%)</div><div><input id="ofs_h_dht_cfg" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Pression BMP280 (hPa)</div><div><input id="ofs_press_cfg" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Vent (km/h)</div><div><input id="ofs_wind_cfg" type="number" step="0.1" placeholder="0.0"></div>
+    <div>Température SHT40 (°C)</div><div><input id="ofs_t_sht40_cfg" type="number" step="0.1" placeholder="0.0"></div>
   </div>
   <div class="actions-vertical">
     <button id="btnLoadOfs" class="btn btn-outline btn-block">↻ Charger</button>
