@@ -16,6 +16,7 @@
 
 // ---------- Déclarations externes depuis main.cpp ----------
 extern int degret; // direction live 0..359
+extern time_t g_boot_time; // Timestamp de démarrage (epoch)
 
 // Modules runtime
 extern int module_bmp280, module_dht22, module_anemo, module_girou,
@@ -266,6 +267,16 @@ String buildStationJsonPayload() {
   long config_ts = prefsVer.getLong("config_ts", 0);
   prefsVer.end();
   if (config_ts > 0) doc["config_last_modified"] = config_ts;
+  
+  // Boot time (timestamp époque de démarrage)
+  if (g_boot_time > 0) {
+    doc["boot_time"] = (uint32_t)g_boot_time;
+    // Format lisible : "YYYY-MM-DD HH:MM:SS"
+    struct tm* ptm = localtime(&g_boot_time);
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", ptm);
+    doc["boot_time_readable"] = String(buf);
+  }
 
   String payload; serializeJson(doc, payload);
   return payload;
@@ -283,6 +294,7 @@ String buildStationJsonPayloadStrict() {
 
   // --- Mesures (l'API veut des nombres réels, pas NaN, et certaines clés obligatoires)
   float tempdh22   = isnan(g_snap.temp_dht)   ? 0.0f : roundN(g_snap.temp_dht, 1);
+  // Si le BMP280 est en erreur, on n’envoie pas de NaN vers l’API : on renvoie 0.0.
   float tempbmp    = (etat_bmp280 == BMP_OK && !isnan(g_snap.temp_bmp)) ? roundN(g_snap.temp_bmp, 1) : 0.0f;
   int   humi       = isnan(g_snap.hum)        ? 0    : (int)roundf(g_snap.hum);
   float pressOut   = (etat_bmp280 == BMP_OK && !isnan(g_snap.press_hPa)) ? roundN(g_snap.press_hPa, 1) : 0.0f;
@@ -335,6 +347,11 @@ String buildStationJsonPayloadStrict() {
 void setupLocalStationApiHandler(WebServer &server) {
   server.on("/api/localStationInfo", HTTP_GET, [&server]() {
     String payload = buildStationJsonPayload();
+    server.send(200, "application/json", payload);
+  });
+
+  server.on("/api/push/payload", HTTP_GET, [&server]() {
+    String payload = buildStationJsonPayloadStrict();
     server.send(200, "application/json", payload);
   });
 }

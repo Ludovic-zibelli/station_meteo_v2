@@ -103,6 +103,7 @@ async function chargerDonnees() {
     setText('temp280',     (data.tempbmp280 != null) ? Number(data.tempbmp280).toFixed(2) : '-');
     setText('datetime',    data.datetime ?? '-');
     setText('tpsvie',      data.tpsvie ?? '-');
+    setText('boot_time',   data.boot_time_readable ?? '-');
     setText('pointderosee',(data.pointderosee != null) ? Number(data.pointderosee).toFixed(2) : '-');
     setText('anemometre',  (data.anemometre != null) ? Number(data.anemometre).toFixed(2) : '-');
     setText('rafale',      (data.rafale != null) ? Number(data.rafale).toFixed(2) : '-');

@@ -226,6 +226,7 @@ static float diag_vcc_max = 0.0f;
 static uint32_t diag_brownout_count = 0;
 static uint32_t diag_last_reboot_ms = 0;
 static uint32_t diag_free_heap_boot = 0;
+time_t g_boot_time = 0;  // Timestamp de démarrage en secondes (epoch) - GLOBAL
 
 // prototype ADC interne 5V si tu mesures déjà le Vcc
 extern float lireVCC5();  // OU tension_solaire si tu veux
@@ -1407,6 +1408,18 @@ app_logf("[BOOT] Free heap at boot: %u", diag_free_heap_boot);
       Serial.printf("[RTC] Nouvelle heure : %04d-%02d-%02d %02d:%02d:%02d\n",
           check_rtc.year(), check_rtc.month(), check_rtc.day(),
           check_rtc.hour(), check_rtc.minute(), check_rtc.second());
+  }
+
+  // Capturer le timestamp de démarrage (boot time)
+  g_boot_time = time(nullptr);
+  if (g_boot_time > 0) {
+    struct tm* ptm = localtime(&g_boot_time);
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", ptm);
+    Serial.printf("[BOOT] Boot time: %s (epoch: %ld)\n", buf, g_boot_time);
+    app_logf("[BOOT] Boot time: %s (epoch: %ld)", buf, g_boot_time);
+  } else {
+    Serial.println("[BOOT] NTP/RTC not yet ready, boot_time will be 0");
   }
 
     // Initialisation du capteur BMP280

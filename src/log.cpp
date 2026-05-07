@@ -92,19 +92,25 @@ static void trim_file_keep_last_n() {
 }
 
 // Flush interne (mutex déjà pris)
-static void flush_locked() {
-  if (s_buf.isEmpty()) return;
-
+static bool flush_locked() {
+  if (s_buf.isEmpty()) return true;
 
   String p = log_daily_path();
   File f = SPIFFS.open(p, FILE_APPEND);
   if (!f) f = SPIFFS.open(p, "w");
-  if (f) {
-    f.print(s_buf);
-    f.close();
-    for (size_t i = 0; i < s_buf.length(); ++i) if (s_buf[i] == '\n') ++s_lineCount;
+  if (!f) {
+    Serial.printf("[LOG] flush failed: cannot open %s\n", p.c_str());
+    return false;
   }
 
+  if (f.print(s_buf) < 0) {
+    Serial.printf("[LOG] flush failed: write error %s\n", p.c_str());
+    f.close();
+    return false;
+  }
+
+  f.close();
+  for (size_t i = 0; i < s_buf.length(); ++i) if (s_buf[i] == '\n') ++s_lineCount;
   s_buf = "";
   s_lastFlush = millis();
 
@@ -112,6 +118,7 @@ static void flush_locked() {
   if (s_lineCount > (uint32_t)(s_maxLines + 20)) {
     trim_file_keep_last_n();
   }
+  return true;
 }
 
 void log_init(const char* path, uint16_t maxLines) {
@@ -177,7 +184,10 @@ void app_logf(const char* fmt, ...) {
 bool log_read(String& out, size_t maxBytes) {
   out = "";
   if (!take()) return false;
-    
+
+  // Flush pending log lines vers le fichier avant lecture.
+  if (!s_buf.isEmpty()) flush_locked();
+
   String p = log_daily_path();
   File f = SPIFFS.open(p, "r");
   if (!f) { give(); return false; }
@@ -313,6 +323,10 @@ bool log_read_file(const char* path, String& out, size_t maxBytes) {
   out = "";
   if (!path || !*path) return false;
   if (!take()) return false;
+
+  // S'assurer que le buffer en RAM est flushé avant lecture
+  if (!s_buf.isEmpty()) flush_locked();
+
   File f = SPIFFS.open(path, "r");
   if (!f) { give(); return false; }
   size_t sz = f.size();
