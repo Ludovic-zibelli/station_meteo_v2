@@ -74,7 +74,7 @@ bool sendEtatCapteursToApi();
 bool sendLatestEtatStationMeteoToApi();
 
 // Recharge la config API (NVS d’abord, fallback DB si vide — implémenté dans api.cpp)
-void apiRefreshConfigFromDb();
+void apiRefreshConfig();
 
 // Constructions JSON RAM-only
 String buildStationJsonPayload();        // /api/localStationInfo

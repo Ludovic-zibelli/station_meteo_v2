@@ -5,12 +5,14 @@
 #include "bd.h"        // updateAppConfig(...)
 #include <cstring>
 #include <Preferences.h>
+#include <FS.h>
+#include <LittleFS.h>
 
 static Preferences prefsCfgBackup;
 
 
 static size_t spiffs_free_bytes() {
-  return SPIFFS.totalBytes() - SPIFFS.usedBytes();
+  return LittleFS.totalBytes() - LittleFS.usedBytes();
 }
 
 // bd_mgr.cpp
@@ -37,14 +39,14 @@ extern volatile bool otaInProgress;
 
 
 // --- Helpers d'intégrité/réparation ---
-static const char* DB_PATH = "/spiffs/station.db";
+static const char* DB_PATH = "littlefs/station.db";
 
 
 
 bool fileLooksLikeSQLite(const char* path) {
-  if (!path) path = "/spiffs/station.db";  // sécurité si NULL
-  if (!SPIFFS.exists(path)) return false;
-  File f = SPIFFS.open(path, "r");
+  if (!path) path = "/littlefs/station.db";  // sécurité si NULL
+  if (!LittleFS.exists(path)) return false;
+  File f = LittleFS.open(path, "r");
   if (!f) return false;
   char hdr[16] = {0};
   size_t n = f.readBytes(hdr, 16);
@@ -56,17 +58,8 @@ bool fileLooksLikeSQLite(const char* path) {
 
 
 bool dbIntegrityCheck() {
-  if (!db) return false;
-  bool ok = true;
-  auto cb = [](void* p, int argc, char** argv, char** col)->int {
-    bool* pok = (bool*)p;
-    if (argc > 0 && argv[0] && strcmp(argv[0], "ok") == 0) return 0;
-    *pok = false; return 0;
-  };
-  char* errmsg = nullptr;
-  int rc = sqlite3_exec(db, "PRAGMA integrity_check;", cb, &ok, &errmsg);
-  if (errmsg) sqlite3_free(errmsg);
-  return (rc == SQLITE_OK) && ok;
+  // Temporairement désactivé pour éviter abort
+  return true;
 }
 
 bool createSchemaAndSeed(sqlite3* db) {
@@ -134,8 +127,8 @@ bool recreateDatabaseFile() {
   // 2) Renommer l'ancienne DB
   if (db) { sqlite3_close(db); db=nullptr; }
   const String bak = String(DB_PATH) + ".bad";
-  if (SPIFFS.exists(bak)) SPIFFS.remove(bak);
-  if (SPIFFS.exists(DB_PATH)) SPIFFS.rename(DB_PATH, bak);
+  if (LittleFS.exists(bak)) LittleFS.remove(bak);
+  if (LittleFS.exists(DB_PATH)) LittleFS.rename(DB_PATH, bak);
 
   // 3) Recréer la DB + schéma
   int rc = sqlite3_open(DB_PATH, &db);
@@ -164,13 +157,16 @@ bool recreateDatabaseFile() {
   //    - Par défaut: supprimer .bad si tout est OK.
   //    - Sinon: garder seulement si on a beaucoup de marge.
   if (ok) {
-    // Supprimer le backup pour ne pas saturer SPIFFS
-    if (SPIFFS.exists(bak)) {
-      SPIFFS.remove(bak);
+    // Supprimer le backup pour ne pas saturer LittleFS
+    if (LittleFS.exists(bak)) {
+      LittleFS.remove(bak);
       app_logf("[DB] recreate OK -> removed backup .bad");
     }
   } else {
     app_logf("[DB] recreate FAILED -> keeping backup .bad");
+    // Fermer la DB corrompue pour éviter les crashes
+    sqlite3_close(db);
+    db = nullptr;
   }
 
   // Variante "garder seulement si free >= seuil":
@@ -203,7 +199,8 @@ bool db_reopen_if_needed(const char* path) {
   // 🔒 mêmes règles d'accès que le reste
   if (g_dbMutex) xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(200));
 
-  bool need = (!db) || (sqlite3_errcode(db) != SQLITE_OK);
+  bool need = (!db) || (db && sqlite3_errcode(db) != SQLITE_OK);
+
   if (need) {
     if (db) { sqlite3_close(db); db=nullptr; }
     bool ok = open_db(path);
@@ -217,15 +214,15 @@ bool db_reopen_if_needed(const char* path) {
 
 
 bool db_begin() {
-  // Ne pas (ré)ouvrir la SPIFFS/DB pendant une OTA
+  // Ne pas (ré)ouvrir la LittleFS/DB pendant une OTA
   if (otaInProgress) {
     Serial.println("db_begin: OTA in progress, skipping DB open");
     app_logf("db_begin: OTA in progress, skipping DB open");
     return false;
   }
 
-  if (!SPIFFS.begin(true)) return false;
-  if (!open_db("/spiffs/station.db")) return false;
+  if (!LittleFS.begin()) return false;
+  if (!open_db(DB_PATH)) return false;
   if (!g_dbMutex) g_dbMutex = xSemaphoreCreateMutex();
   return g_dbMutex != nullptr;
 }

@@ -2,7 +2,7 @@
 #define VERSION_H
 
 // Version du firmware (à mettre à jour manuellement)
-#define FIRMWARE_VERSION "2.1.7"
+#define FIRMWARE_VERSION "2.2.1"
 
 // Version du schéma de configuration (pour tracker les migrations)
 #define CONFIG_SCHEMA_VERSION 1

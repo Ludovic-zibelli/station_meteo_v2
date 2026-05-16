@@ -16,7 +16,8 @@
 #include "log.h"
 
 //Stockage des données
-#include "SPIFFS.h"
+#include <FS.h>
+#include <LittleFS.h>
 
 #include "esp_system.h"
 #include "rom/rtc.h"
@@ -33,8 +34,8 @@
 #include "freertos/task.h"
 
 //Base de données
-#include "bd.h"
-#include "bd_mgr.h"
+//#include "bd.h"
+//#include "bd_mgr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -49,9 +50,8 @@
 
 //Envoi des donnees 
 #include "api.h"
-#include "db_read.h"
-#include "bd.h"
-
+//#include "db_read.h"
+//#include "bd.h"
 
 
 
@@ -85,6 +85,17 @@ struct StatScalar {
     minDay = NAN; maxDay = NAN;
     tMinDay = tMaxDay = 0;
   }
+};
+
+struct Modules {
+  int bmp280;
+  int dht22;
+  int sht40;
+  int anemo;
+  int girou;
+  int pluvio;
+  int tension;
+  int bitvie;
 };
 
 // Nos séries suivies
@@ -123,11 +134,11 @@ String contentTypeFor(const String& path) {
 }
 
 void sendWithCache(const String& path) {
-  if (!SPIFFS.exists(path)) {
+  if (!LittleFS.exists(path)) {
     server.send(404, "text/plain", "Not found");
     return;
   }
-  File f = SPIFFS.open(path, "r");
+  File f = LittleFS.open(path, "r");
   server.sendHeader("Cache-Control", "public, max-age=2592000, immutable"); // ~30 jours
   server.streamFile(f, contentTypeFor(path));
   f.close();
@@ -142,7 +153,7 @@ void setRTCFromNTP();
 #define I2C_SCL_PIN 22
 #endif
 
-static volatile bool g_i2cWdEnabled       = true;     // toggle runtime
+static volatile bool g_i2cWdEnabled       = false;     // toggle runtime
 static unsigned long g_lastI2CokMs        = 0;        // dernier succès I²C
 static unsigned long g_lastI2CcheckMs     = 0;        // anti-spam
 static int           g_i2cRecoverAttempts = 0;        // tentatives consécutives
@@ -309,6 +320,10 @@ int module_pluvio = 1; //1 = Pluviomètre activé, 0 = désactivé
 int module_tension = 1; //1 = Mesure des tensions activée, 0 = désactivée
 int module_bitvie = 1; //1 = Bitvie activé, 0 = désactivé
 int module_sht40 = 0; //1 = SHT40 activé, 0 = désactivé
+
+
+String API_URL;
+String API_URL_ETATSTATION;
 
 // Flag global pour indiquer qu'une OTA est en cours (utilisé par api.cpp)
 volatile bool otaInProgress = false;
@@ -581,25 +596,7 @@ void handleSetTime() {
     server.send(200, "text/plain", "RTC mis à l'heure !");
 }
 
-// Lit la config modules (id=1) depuis la table etatcapteurs via db_read.cpp
-bool loadModulesFromDB(Modules& out) {
-  // (facultatif mais recommandé si tu utilises db_mgr et un serveur async) :
-  // DbLock _;
 
-  int mb, md, ma, mg, mp, mt, mv, ms;
-  if (!readModulesById(1, mb, md, ma, mg, mp, mt, mv, ms)) {
-    return false;
-  }
-  out.bmp280 = mb;
-  out.dht22  = md;
-  out.sht40  = ms;
-  out.anemo  = ma;
-  out.girou  = mg;
-  out.pluvio = mp;
-  out.tension= mt;
-  out.bitvie = mv;
-  return true;
-}
 
 
 static bool modulesEqual(const Modules& a, const Modules& b) {
@@ -686,7 +683,7 @@ void handleCalibrationButton() {
 
 
 void handleRoot() {
-  File file = SPIFFS.open("/index.html", "r");
+  File file = LittleFS.open("/index.html", "r");
   if (file) {
     server.streamFile(file, "text/html");
     file.close();
@@ -714,9 +711,10 @@ static int pctToBars(int pct) {
 
 
 // Accès DB partagés (définis dans bd_mgr.cpp)
-extern sqlite3* db;
-extern SemaphoreHandle_t g_dbMutex;
+//extern sqlite3* db;
+//extern SemaphoreHandle_t g_dbMutex;
 
+/*
 // Petites fonctions d’aide pour le mutex
 static inline bool dbLock(uint32_t ms = 300) {
   return g_dbMutex && xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(ms)) == pdTRUE;
@@ -724,7 +722,7 @@ static inline bool dbLock(uint32_t ms = 300) {
 static inline void dbUnlock() {
   if (g_dbMutex) xSemaphoreGive(g_dbMutex);
 }
-
+*/
 // --- Helpers JSON sûrs ---
 // Retourne "null" si v est NaN/Inf, sinon le nombre formaté avec 'dec' décimales.
 static inline String jsonNumberOrNull(float v, int dec = 2) {
@@ -943,15 +941,25 @@ static void onWiFiEvent(WiFiEvent_t event) {
   }
 }
 
-// Lancer la connexion STA depuis la DB (sans bloquer)
-static void startStaFromDB() {
-  AppConfig cfg;
-  if (!readAppConfig(cfg)) {
-    Serial.println("✖ Lecture config Wi‑Fi échouée (DB).");
+// Lancer la connexion STA depuis NVS (sans bloquer)
+static void startStaFromNVS() {
+
+  Preferences prefs;
+  prefs.begin("wifi", false);
+
+  String ssid = prefs.getString("ssid", "");
+  String pass = prefs.getString("pass", "");
+
+  prefs.end();
+
+  if (ssid == "") {
+    Serial.println("❌ Aucun WiFi configuré (NVS)");
     return;
   }
-  WiFi.begin(cfg.ssid_wifi.c_str(), cfg.pass_wifi.c_str());
-  Serial.printf("[WiFi] STA connect to SSID '%s' (non bloquant)\n", cfg.ssid_wifi.c_str());
+
+  WiFi.begin(ssid.c_str(), pass.c_str());
+
+  Serial.printf("[WiFi] STA connect à SSID '%s' (non bloquant)\n", ssid.c_str());
 }
 
 // Helpers Auth HTTP
@@ -971,33 +979,43 @@ static bool requireAdminAuth() {
 }
 
 
-void connectWifiFromDB() {
-  AppConfig cfg;
-  if (!readAppConfig(cfg)) {
-    Serial.println("❌ Lecture config Wi‑Fi échouée");
-    app_logf("Lecture config Wi‑Fi échouée");
+
+void connectWifiFromNVS() {
+
+  Preferences prefs;
+  prefs.begin("wifi", false); // lecture seule
+
+  String ssid = prefs.getString("ssid", "Freebox-669838");
+  String pass = prefs.getString("pass", "burria52-ejectione-everberata!-vulnerate4");
+
+  prefs.end();
+
+  if (ssid == "") {
+    Serial.println("❌ Aucun WiFi configuré");
     return;
   }
-  Serial.printf("Connexion Wi‑Fi à : %s\n", cfg.ssid_wifi.c_str());
-  WiFi.begin(cfg.ssid_wifi.c_str(), cfg.pass_wifi.c_str());
+
+  Serial.printf("Connexion WiFi : %s\n", ssid.c_str());
+
+  WiFi.begin(ssid.c_str(), pass.c_str());
   WiFi.setSleep(false);
 
   int retry = 0;
+
   while (WiFi.status() != WL_CONNECTED && retry < 20) {
     delay(500);
     Serial.print(".");
     retry++;
   }
+
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✅ Connecté au Wi‑Fi !");
+    Serial.println("\n✅ Connecté !");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("\n❌ Impossible de se connecter au Wi‑Fi");
-    app_logf("Impossible de se connecter au Wi‑Fi");
+    Serial.println("\n❌ Connexion échouée");
   }
 }
 
-#include <ArduinoJson.h>
 
 void handleEtatCapteurs() {
   StaticJsonDocument<512> doc;
@@ -1077,85 +1095,111 @@ static void saveNtpTzToNvs() {
 
 
 void handleStatusJson() {
-  AppConfig cfg;
-  readAppConfig(cfg); // ssid_wifi, pass_wifi, ip_wifi, id_station, adresse_api, token, activation_envoi_api
+
+  // 🔹 Lecture WiFi depuis NVS
+  Preferences prefsWifi;
+  prefsWifi.begin("wifi", true);
+
+  String ssid = prefsWifi.getString("ssid", "");
+  prefsWifi.end();
+
+  // 🔹 Lecture API depuis NVS
+  Preferences prefsApi;
+  prefsApi.begin("api", true);
+
+  String api_url = prefsApi.getString("base", "");
+  String token   = prefsApi.getString("key", "");
+  int stationId  = prefsApi.getInt("id", 1);
+
+  prefsApi.end();
 
   StaticJsonDocument<1024> j;
 
-  // 1) Modules activés (depuis la DB ou variables miroir que tu synchronises)
+  // 1) Modules
   JsonObject mods = j.createNestedObject("modules");
   mods["bmp280"] = module_bmp280;
   mods["dht22"]  = module_dht22;
   mods["sht40"]  = module_sht40;
   mods["anemo"]  = module_anemo;
-  mods["vane"]   = module_girou;   // nom "vane" côté UI
-  mods["rain"]   = module_pluvio;  // nom "rain" côté UI
+  mods["vane"]   = module_girou;
+  mods["rain"]   = module_pluvio;
   mods["bitvie"] = module_bitvie;
 
-  // 2) Etats OK/HS (tes flags calculés)
+  // 2) États
   JsonObject st = j.createNestedObject("state");
   st["bmp280"] = etat_bmp280;
   st["dht22"]  = etat_dht22;
-  st["sht40"]  = (module_sht40==1); // si tu as un flag dédié, remplace
+  st["sht40"]  = (module_sht40 == 1);
   st["anemo"]  = etat_anemo;
   st["vane"]   = etat_girou;
   st["rain"]   = etat_pluvio;
 
-  // 3) Valeurs courantes (déjà lues dans loop())
-  JsonObject jb = j.createNestedObject("bmp280"); jb["temp"] = g_snap.temp_bmp; jb["press"] = g_snap.press_hPa;
-  JsonObject jd = j.createNestedObject("dht22");  jd["temp"]  = g_snap.temp_dht; jd["hum"]   = g_snap.hum;
-  JsonObject ja = j.createNestedObject("anemo");  ja["speed"] = g_snap.wind;     ja["gust"]  = g_snap.gust;
-  JsonObject jv = j.createNestedObject("vane");   jv["deg"]   = degret;      jv["card"]  = "—"; // si tu as un libellé (N, NE...)
-  JsonObject jr = j.createNestedObject("rain");   jr["mm"]    = quantite;
-  JsonObject jvolt = j.createNestedObject("volt"); jvolt["solar"] = tension_solaire; jvolt["batt"] = tension_batterie;
+  // 3) Valeurs
+  JsonObject jb = j.createNestedObject("bmp280");
+  jb["temp"]  = g_snap.temp_bmp;
+  jb["press"] = g_snap.press_hPa;
 
-  // 4) Confs affichées (API + NTP)
+  JsonObject jd = j.createNestedObject("dht22");
+  jd["temp"] = g_snap.temp_dht;
+  jd["hum"]  = g_snap.hum;
+
+  JsonObject ja = j.createNestedObject("anemo");
+  ja["speed"] = g_snap.wind;
+  ja["gust"]  = g_snap.gust;
+
+  JsonObject jv = j.createNestedObject("vane");
+  jv["deg"]  = degret;
+  jv["card"] = "—";
+
+  JsonObject jr = j.createNestedObject("rain");
+  jr["mm"] = quantite;
+
+  JsonObject jvolt = j.createNestedObject("volt");
+  jvolt["solar"] = tension_solaire;
+  jvolt["batt"]  = tension_batterie;
+
+  // 4) Config
   JsonObject jc = j.createNestedObject("conf");
-  jc["bmp280_addr"] = String("0x") + String(g_bmp_addr, HEX); // 0x76 ou 0x77
-  jc["sht40_addr"]  = "0x44";
-  jc["dht22_gpio"]  = 4;
-  jc["anemo_gpio"]  = 18;
-  jc["adc_solar"]   = 35;
-  jc["adc_batt"]    = 34;
-  jc["api_url"]     = cfg.adresse_api;
-  jc["api_token"]   = cfg.token;
+  jc["bmp280_addr"] = String("0x") + String(g_bmp_addr, HEX);
+  jc["api_url"]     = api_url;
+  jc["api_token"]   = token;
   jc["api_enabled"] = (activation_envoi_api != 0);
   jc["ntp_server"]  = g_ntp_server;
   jc["timezone"]    = g_timezone;
-  jc["i2c_wd_enabled"]  = g_i2cWdEnabled;
-  jc["i2c_last_ok_ms"]  = (uint32_t)g_lastI2CokMs;
-  jc["i2c_recover_count"] = g_i2cRecoverAttempts;
-  jc["i2c_wd_reboots"]  = (uint32_t)g_i2cWdReboots;
-  jc["i2c_state"]       = ((millis() - g_lastI2CokMs) > I2C_WATCHDOG_MS ? "warning" : "ok");
+
+  jc["i2c_wd_enabled"]   = g_i2cWdEnabled;
+  jc["i2c_last_ok_ms"]   = (uint32_t)g_lastI2CokMs;
+  jc["i2c_recover_count"]= g_i2cRecoverAttempts;
+  jc["i2c_wd_reboots"]   = (uint32_t)g_i2cWdReboots;
+  jc["i2c_state"]        = ((millis() - g_lastI2CokMs) > I2C_WATCHDOG_MS ? "warning" : "ok");
+
   // 5) Réseau
   JsonObject jn = j.createNestedObject("net");
-  jn["ssid"]          = cfg.ssid_wifi;
-  jn["wifi_password"] = "";            // on n’affiche pas le mdp ici
-  jn["ip_wifi"]       = cfg.ip_wifi;   // "dhcp" ou "X.Y.Z.W"
-  jn["id_station"]    = cfg.id_station;
+  jn["ssid"]          = ssid;
+  jn["wifi_password"] = "";
+  jn["ip_wifi"]       = "dhcp";
+  jn["id_station"]    = stationId;
 
-  // 6) KPI interface réseau
+  // 6) KPI
   JsonObject ui = j.createNestedObject("ui");
-// Vent moyen 10 min (calculé en RAM via le buffer g_windBuf)
-  ui["wind_avg10"] = windAvg10min();   // float
-  // Pluie (snapshots RAM)
+  ui["wind_avg10"] = windAvg10min();
   ui["rain_hour"]  = rainHourMm();
   ui["rain_day"]   = rainDayMm();
   ui["rain_week"]  = rainWeekMm();
-  // Direction (live + cardinal si tu veux mapper)
-  ui["dir_deg"]    = degret;           // int (0..359)
-  ui["dir_card"]   = "—";              // tu peux brancher degToCardinal(degret) si tu l’as
-  
-  // Wi‑Fi
+  ui["dir_deg"]    = degret;
+  ui["dir_card"]   = "—";
+
   int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
   int pct  = rssiToPercent(rssi);
   int bars = pctToBars(pct);
+
   ui["wifi_rssi"]   = rssi;
-  ui["wifi_percent"] = pct;
-  ui["wifi_bars"]    = bars;
+  ui["wifi_percent"]= pct;
+  ui["wifi_bars"]   = bars;
 
+  String out;
+  serializeJson(j, out);
 
-  String out; serializeJson(j, out);
   server.send(200, "application/json", out);
 }
 
@@ -1277,12 +1321,33 @@ static inline void sendNoCacheHeaders(WebServer& srv) {
 //  prefsAp.begin("ap",     /*rw=*/false); prefsAp.clear();   prefsAp.end();
 //  Serial.println("[Auth/AP] NVS cleared. Reboot to reapply defaults.");
 //}
+void debugListFiles() {
+    Serial.println("---- LISTE LITTLEFS ----");
+
+    File root = LittleFS.open("/");
+    if (!root) {
+        Serial.println("Erreur ouverture racine !");
+        return;
+    }
+
+    File file = root.openNextFile();
+    while (file) {
+        Serial.print("Fichier: ");
+        Serial.print(file.name());
+        Serial.print(" | Taille: ");
+        Serial.println(file.size());
+        file = root.openNextFile();
+    }
+
+    Serial.println("------------------------");
+}
 
 
 
 void setup() {
  
   Serial.begin(115200);
+
 
   RESET_REASON r0 = rtc_get_reset_reason(0);
   RESET_REASON r1 = rtc_get_reset_reason(1);
@@ -1291,18 +1356,39 @@ void setup() {
   diag_free_heap_boot = ESP.getFreeHeap();
   diag_last_reboot_ms = millis();
 
-app_logf("[BOOT] Reset reason core0=%d core1=%d", r0, r1);
-app_logf("[BOOT] Free heap at boot: %u", diag_free_heap_boot);
+  app_logf("[BOOT] Reset reason core0=%d core1=%d", r0, r1);
+  app_logf("[BOOT] Free heap at boot: %u", diag_free_heap_boot);
   
   //resetAuthApToDefaults();
 
   //Connection au wifi 
-  if (!SPIFFS.begin(true)) {
-    Serial.println("Erreur SPIFFS !");
+
+  
+  Preferences prefs;
+  prefs.begin("wifi", false);
+
+  prefs.putString("ssid", "Freebox-669838");
+  prefs.putString("pass", "burria52-ejectione-everberata!-vulnerate4");
+
+  prefs.end();
+
+  //Enregistrement activation envoi API dans NVS
+  Preferences prefsMods;
+  prefsMods.begin("modules", false);
+  prefsMods.putInt("api", activation_envoi_api);
+  prefsMods.end();
+
+  Serial.printf("API activation = %d\n", activation_envoi_api);
+
+  connectWifiFromNVS();
+
+  if (!LittleFS.begin(true)) {
+    Serial.println("Erreur LittleFS !");
     return;
   }
 
-  
+  debugListFiles();
+
   
   log_init("/log.txt", 100);               // fichier + limite
   log_set_flush_period(60000);             // 60 s
@@ -1344,30 +1430,10 @@ app_logf("[BOOT] Free heap at boot: %u", diag_free_heap_boot);
                 ST_press.minAll, ST_press.maxAll);
   Serial.printf("[Records] gust(max=%.1f) dir=%d\n", GUST_maxAll, GUST_dirAll);
 
-  
-  if (!db_begin()) {
-    Serial.println("❌ DB init KO");
-    app_logf("DB init KO");
-      
 
-  } else {
-    Serial.println("✅ DB ouverte");
-    app_logf("DB ok");
-  }
-  apiRefreshConfigFromDb();   // charge API_URL, API_KEY, STATION_ID, etc.
+  apiRefreshConfig();  // charge API_URL, API_KEY, STATION_ID, etc.
 
-
-  
-  if (!fileLooksLikeSQLite() || !dbIntegrityCheck()) {
-    app_logf("[DB] invalid on boot -> recreate");
-    if (recreateDatabaseFile()) {
-      app_logf("[DB] recreate OK");
-      apiRefreshConfigFromDb();   // ✅ recharger les champs (URL, token, station, etc.)
-    } else {
-      app_logf("[DB] recreate FAILED");
-    }
-  }
-
+ 
   Wire.begin();
   
     // ---- SOFT RESET BMP280 AU DEMARRAGE ----
@@ -1496,31 +1562,46 @@ app_logf("[BOOT] Free heap at boot: %u", diag_free_heap_boot);
   startLocalAP();
 
   // Lancer la connexion STA (réseau maison) sans bloquer
-  startStaFromDB();
+  startStaFromNVS();
 
   // Option conso/perf (au choix) :
   WiFi.setSleep(false); // perf réseau (écran 30 s OK) ; passer true si tu veux économiser
   
   tensions_begin_async(1000); // 1 échantillon par seconde suffit largement
 
+  //Activation de l'envoi API au démarrage (sera réajusté après chargement NVS)
+  activation_envoi_api = 1;
   
 // --- Modules + activation API : préférer NVS, fallback unique DB ---
 {
   Modules bootMods{};
   int apiActive = 0;
 
-  bool haveNvs = loadModulesFromNvs(bootMods, apiActive);
-  if (!haveNvs) {
-    // Fallback : lire une fois la DB (si présente), puis ensemencer la NVS
-    if (!loadModulesFromDB(bootMods)) {
-      // default raisonnables si DB absente/HS
-      bootMods = Modules{ /*bmp280*/1, /*dht22*/1, /*sht40*/0, /*anemo*/1,
-                          /*girou*/1, /*pluvio*/1, /*tension*/1, /*bitvie*/1 };
-    }
-    int a = 0; if (!readActivationApi(a)) a = 0;
-    apiActive = a;
-    saveModulesToNvs(bootMods, apiActive);
-  }
+
+bool haveNvs = loadModulesFromNvs(bootMods, apiActive);
+
+if (!haveNvs) {
+
+  Serial.println("⚠️ Modules NVS absents -> valeurs par défaut");
+
+  // valeurs par défaut
+  bootMods = Modules{
+    /*bmp280*/1,
+    /*dht22*/1,
+    /*sht40*/0,
+    /*anemo*/1,
+    /*girou*/1,
+    /*pluvio*/1,
+    /*tension*/1,
+    /*bitvie*/1
+  };
+
+  apiActive = 0;
+
+  // sauvegarde en NVS
+  saveModulesToNvs(bootMods, apiActive);
+}
+
 
   // Appliquer la config au runtime
   applyModuleChange(mods, bootMods);
@@ -1537,6 +1618,11 @@ app_logf("[BOOT] Free heap at boot: %u", diag_free_heap_boot);
 
   activation_envoi_api = apiActive;
   Serial.printf("activation_envoi_api chargé: %d\n", activation_envoi_api);
+  // Réactivation de l'envoi API au démarrage en fonction de la config NVS
+  Serial.printf("activation_envoi_api initialisé à: %d\n", activation_envoi_api);
+  // Temporairement désactiver l'envoi API pour éviter les blocages du serveur web
+  activation_envoi_api = 0;
+  Serial.printf("activation_envoi_api forcé à 0 pour stabiliser le serveur web\n");
 }
 
 loadOffsetsFromNvs();
@@ -1552,7 +1638,7 @@ server.on("/status.json", HTTP_GET, handleStatusJson);
 // Protéger la page config
 server.on("/config", HTTP_GET, []() {
   if (!requireAdminAuth()) return;
-  File file = SPIFFS.open("/config.html", "r");
+  File file = LittleFS.open("/config.html", "r");
   if (file) { server.streamFile(file, "text/html"); file.close(); }
   else      { server.send(404, "text/plain", "Page config introuvable"); }
 });
@@ -1684,7 +1770,7 @@ server.on("/wifi/scan.json", HTTP_GET, []() {
 
 // --- Page sous-config girouette ---
 server.on("/config/vane", HTTP_GET, []() {
-  File f = SPIFFS.open("/config_vane.html", "r");
+  File f = LittleFS.open("/config_vane.html", "r");
   if (f) { server.streamFile(f, "text/html"); f.close(); }
   else   { server.send(404, "text/plain", "Page girouette introuvable"); }
 });
@@ -1757,18 +1843,38 @@ server.onNotFound([]() {
 
 // Protéger la mise à jour du Wi-Fi maison
 server.on("/config/network", HTTP_POST, []() {
-  if (!requireAdminAuth()) return;  // ← AJOUT
-  AppConfig cur; readAppConfig(cur);
-  AppConfig n = cur;
-  if (server.hasArg("ssid"))          n.ssid_wifi = server.arg("ssid");
-  if (server.hasArg("wifi_password")) { String p = server.arg("wifi_password"); if (p != "") n.pass_wifi = p; }
-  if (server.hasArg("ip_wifi"))       n.ip_wifi = server.arg("ip_wifi"); // "dhcp" ou "X.Y.Z.W"
-  if (server.hasArg("id_station"))    n.id_station = server.arg("id_station");
-  if (!updateAppConfig(n)) { server.send(500,"text/plain","db update failed"); return; }
-  if (n.ssid_wifi != cur.ssid_wifi || n.pass_wifi != cur.pass_wifi) {
-    WiFi.disconnect(true, true); delay(300);
-    WiFi.begin(n.ssid_wifi.c_str(), n.pass_wifi.c_str());  // relance STA
+
+  if (!requireAdminAuth()) return;
+
+  Preferences prefs;
+  prefs.begin("wifi", false);
+
+  String ssid = prefs.getString("ssid", "");
+  String pass = prefs.getString("pass", "");
+
+  // Mise à jour depuis le formulaire
+  if (server.hasArg("ssid")) {
+    ssid = server.arg("ssid");
   }
+
+  if (server.hasArg("wifi_password")) {
+    String p = server.arg("wifi_password");
+    if (p != "") pass = p;
+  }
+
+  // Sauvegarde
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", pass);
+
+  prefs.end();
+
+  Serial.println("✅ WiFi sauvegardé en NVS");
+
+  // Reconnexion si changement
+  WiFi.disconnect(true, true);
+  delay(300);
+  WiFi.begin(ssid.c_str(), pass.c_str());
+
   server.send(200, "text/plain", "OK");
 });
 
@@ -1776,28 +1882,54 @@ server.on("/config/network", HTTP_POST, []() {
 
 
 // au début du fichier :
-extern void apiRefreshConfigFromDb(); // déjà déclaré dans api.h
+extern void apiRefreshConfig(); // déjà déclaré dans api.h
 
-// dans le handler /config/api :
 server.on("/config/api", HTTP_POST, []() {
-  AppConfig cur; readAppConfig(cur);
-  AppConfig n = cur;
-  if (server.hasArg("api_url"))   n.adresse_api = server.arg("api_url");
-  if (server.hasArg("api_token")) n.token       = server.arg("api_token");
 
-  // checkbox activation
-  int api_flag = server.hasArg("api_enabled") ? 1 : 0;
-  activation_envoi_api = api_flag;
-  Serial.printf("activation_envoi_api défini à: %d\n", activation_envoi_api);
+  // 🔹 Lire actuel depuis NVS
+  Preferences prefs;
+  prefs.begin("api", false);
 
-  // Mettre à jour la DB (compat), si tu veux garder :
-  updateAppConfig(n);
+  String base = prefs.getString("base", "");
+  String token = prefs.getString("key", "");
+  int stationId = prefs.getInt("id", 1);
 
-  // 🔁 Rafraîchir la config API RAM + NVS (NVS prioritaire, fallback DB si NVS vide)
-  apiRefreshConfigFromDb();
+  // 🔹 Mise à jour depuis formulaire
+  if (server.hasArg("api_url")) {
+    base = server.arg("api_url");
+  }
+
+  if (server.hasArg("api_token")) {
+    token = server.arg("api_token");
+  }
+
+  // 🔹 Activation API (RAM uniquement)
+  activation_envoi_api = server.hasArg("api_enabled") ? 1 : 0;
+
+  
+  Preferences prefsMods;
+  prefsMods.begin("modules", false);
+
+  prefsMods.putInt("api", activation_envoi_api);
+
+  prefsMods.end();
+
+  Serial.printf("activation_envoi_api = %d\n", activation_envoi_api);
+
+  // 🔹 Sauvegarde en NVS
+  prefs.putString("base", base);
+  prefs.putString("key", token);
+  prefs.putInt("id", stationId);
+
+  prefs.end();
+
+  // 🔹 Mettre à jour les variables runtime (IMPORTANT)
+  API_URL = base + "/stationdirect/" + String(stationId);
+  API_URL_ETATSTATION = base + "/etatstationmeteo/1";
 
   server.send(200, "text/plain", "OK");
 });
+
 
 
 
@@ -1839,11 +1971,11 @@ server.on("/config/modules", HTTP_POST, []() {
 // /style (MIME + cache)
 server.on("/style", HTTP_GET, []() {
   const char* path = "/style.css";
-  if (!SPIFFS.exists(path)) {
+  if (!LittleFS.exists(path)) {
     server.send(404, "text/plain", "style.css introuvable");
     return;
   }
-  File f = SPIFFS.open(path, "r");
+  File f = LittleFS.open(path, "r");
   server.sendHeader("Cache-Control", "public, max-age=604800, immutable");
   server.streamFile(f, "text/css");
   f.close();
@@ -1851,11 +1983,11 @@ server.on("/style", HTTP_GET, []() {
 
 server.on("/script", HTTP_GET, []() {
   const char* path = "/script.js";
-  if (!SPIFFS.exists(path)) {
+  if (!LittleFS.exists(path)) {
     server.send(404, "text/plain", "script.js introuvable");
     return;
   }
-  File f = SPIFFS.open(path, "r");
+  File f = LittleFS.open(path, "r");
   server.sendHeader("Cache-Control", "public, max-age=604800, immutable");
   server.streamFile(f, "text/javascript");
   f.close();
@@ -1865,8 +1997,8 @@ server.on("/script", HTTP_GET, []() {
 
 server.on("/configjs", HTTP_GET, []() {
   const char* path = "/configjs.js";
-  if (!SPIFFS.exists(path)) { server.send(404, "text/plain", "configjs.js introuvable"); return; }
-  File f = SPIFFS.open(path, "r");
+  if (!LittleFS.exists(path)) { server.send(404, "text/plain", "configjs.js introuvable"); return; }
+  File f = LittleFS.open(path, "r");
   // ❗ pas de cache pour ce fichier : on veut les derniers correctifs JS
   server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   server.sendHeader("Pragma", "no-cache");
@@ -1877,7 +2009,7 @@ server.on("/configjs", HTTP_GET, []() {
 
 // /infos
 server.on("/infos", HTTP_GET,  [] (){
-  File file = SPIFFS.open("/infos.html", "r");
+  File file = LittleFS.open("/infos.html", "r");
   if (file) {
     server.streamFile(file, "text/html");
     file.close();
@@ -1887,7 +2019,8 @@ server.on("/infos", HTTP_GET,  [] (){
 });
 
 // /update_config
-server.on("/update_config", HTTP_POST, []() {
+server.on("/update_config", HTTP_POST, [] () {
+
   int bmp280 = server.hasArg("bmp280") ? 1 : 0;
   int dht22  = server.hasArg("dht22")  ? 1 : 0;
   int anemo  = server.hasArg("anemo")  ? 1 : 0;
@@ -1896,89 +2029,149 @@ server.on("/update_config", HTTP_POST, []() {
   int tension= server.hasArg("tension")? 1 : 0;
   int bitvie = server.hasArg("bitvie") ? 1 : 0;
   int api    = server.hasArg("api")    ? 1 : 0;
-  int sht40 = server.hasArg("sht40") ? 1 : 0;
+  int sht40  = server.hasArg("sht40")  ? 1 : 0;
 
-  updateModulesInDB(1, bmp280, dht22, sht40, anemo, girou, pluvio, tension, bitvie);
-  updateActivationApiInDB(1, api);
+  // ✅ création de la structure
+  Modules m;
+  m.bmp280 = bmp280;
+  m.dht22  = dht22;
+  m.sht40  = sht40;
+  m.anemo  = anemo;
+  m.girou  = girou;
+  m.pluvio = pluvio;
+  m.tension= tension;
+  m.bitvie = bitvie;
+
+  // ✅ sauvegarde NVS
+  saveModulesToNvs(m, api);
+
+  // ✅ mise à jour runtime
+  activation_envoi_api = api;
+
+  Serial.println("✅ Configuration modules sauvegardée (NVS)");
 
   server.send(200, "text/html",
               "<h3>Configuration mise à jour !</h3><a href='/config'>Retour</a>");
 });
 
 
-// GET /config.json
-server.on("/config.json", HTTP_GET, []() {
-  AppConfig c;
-  if (!readAppConfig(c)) {
-    server.send(500, "application/json", "{\"error\":\"db read failed\"}");
-    return;
-  }
-  StaticJsonDocument<512> doc;
-  doc["ssid_wifi"]  = c.ssid_wifi;
-  doc["pass_wifi"]  = String(c.pass_wifi.length(), '*'); // masque
-  doc["IP_WIFI"]    = c.ip_wifi;
-  doc["ID_STATION"] = c.id_station;
-  doc["adresse_api"]= c.adresse_api;
-  doc["token"]      = c.token;
-  doc["activation_envoi_api"] = c.activation_envoi_api;
 
-  
-  // NEW: exposer aussi NTP/TZ depuis RAM (chargés NVS)
+// GET /config.json
+server.on("/config.json", HTTP_GET,  [] () {
+
+  Preferences prefsWifi;
+  prefsWifi.begin("wifi", true);
+
+  String ssid = prefsWifi.getString("ssid", "");
+  String pass = prefsWifi.getString("pass", "");
+
+  prefsWifi.end();
+
+  Preferences prefsApi;
+  prefsApi.begin("api", true);
+
+  String api_url = prefsApi.getString("base", "");
+  String token   = prefsApi.getString("key", "");
+  int stationId  = prefsApi.getInt("id", 1);
+
+  prefsApi.end();
+
+  StaticJsonDocument<512> doc;
+
+  doc["ssid_wifi"]  = ssid;
+  doc["pass_wifi"]  = String(pass.length(), '*'); // masque
+  doc["IP_WIFI"]    = "dhcp"; // tu peux adapter si besoin
+  doc["ID_STATION"] = stationId;
+  doc["adresse_api"]= api_url;
+  doc["token"]      = token;
+
+  // ✅ IMPORTANT : on utilise la variable RAM
+  doc["activation_envoi_api"] = activation_envoi_api;
+
+  // NTP / timezone inchangé
   doc["ntp_server"] = g_ntp_server;
   doc["timezone"]   = g_timezone;
 
-  String out; serializeJson(doc, out);
+  String out;
+  serializeJson(doc, out);
+
   server.send(200, "application/json", out);
 });
 
+
+
 // POST /config.save
-server.on("/config.save", HTTP_POST, []()  {
-      
-  AppConfig cur; readAppConfig(cur);
-  AppConfig n = cur;
+server.on("/config.save", HTTP_POST, [] () {
 
+  // 🔹 NVS WiFi
+  Preferences prefsWifi;
+  prefsWifi.begin("wifi", false);
 
-    
-    if (server.hasArg("ssid_wifi"))    n.ssid_wifi    = server.arg("ssid_wifi");
-    if (server.hasArg("pass_wifi"))  { String p = server.arg("pass_wifi"); if (p != "") n.pass_wifi = p; }
-    if (server.hasArg("IP_WIFI"))      n.ip_wifi      = server.arg("IP_WIFI");
-    if (server.hasArg("ID_STATION"))   n.id_station   = server.arg("ID_STATION");
-    if (server.hasArg("adresse_api"))  n.adresse_api  = server.arg("adresse_api");
-    if (server.hasArg("token"))        n.token        = server.arg("token");
-    if (server.hasArg("activation_envoi_api"))
-                                       n.activation_envoi_api = server.arg("activation_envoi_api").toInt();
+  String ssid = prefsWifi.getString("ssid", "");
+  String pass = prefsWifi.getString("pass", "");
 
-    
-    // --- NTP/TZ: nouveaux champs optionnels ---
-    if (server.hasArg("ntp_server")) {
-      g_ntp_server = server.arg("ntp_server");
-    }
-    if (server.hasArg("timezone")) {
-      g_timezone = server.arg("timezone");
-    }
+  // 🔹 NVS API
+  Preferences prefsApi;
+  prefsApi.begin("api", false);
 
-    if (!updateAppConfig(n)) {
-        server.send(500, "application/json", "{\"ok\":false,\"error\":\"db update failed\"}");
-        return;
-    }
+  String api_url = prefsApi.getString("base", "");
+  String token   = prefsApi.getString("key", "");
+  int stationId  = prefsApi.getInt("id", 1);
 
-    // Rafraîchit les variables runtime
-    apiRefreshConfigFromDb();
+  // 🔹 récupérer valeurs envoyées
+  if (server.hasArg("ssid_wifi")) ssid = server.arg("ssid_wifi");
 
-    
-    // Applique TZ/NTP tout de suite + persiste en NVS
-    applyTimeConfig(g_timezone, g_ntp_server);
-    saveNtpTzToNvs();
+  if (server.hasArg("pass_wifi")) {
+    String p = server.arg("pass_wifi");
+    if (p != "") pass = p;
+  }
 
+  if (server.hasArg("adresse_api")) api_url = server.arg("adresse_api");
+  if (server.hasArg("token"))       token   = server.arg("token");
 
-    // Reconnexion Wi‑Fi si SSID/MdP ont changé
-    if (n.ssid_wifi != cur.ssid_wifi || n.pass_wifi != cur.pass_wifi) {
-        WiFi.disconnect(true, true);
-        delay(300);
-        WiFi.begin(n.ssid_wifi.c_str(), n.pass_wifi.c_str());
-    }
+  if (server.hasArg("ID_STATION")) {
+    stationId = server.arg("ID_STATION").toInt();
+  }
 
-    server.send(200, "application/json", "{\"ok\":true}");
+  if (server.hasArg("activation_envoi_api")) {
+    activation_envoi_api = server.arg("activation_envoi_api").toInt();
+  }
+
+  // 🔹 Sauvegarde NVS
+  prefsWifi.putString("ssid", ssid);
+  prefsWifi.putString("pass", pass);
+
+  prefsApi.putString("base", api_url);
+  prefsApi.putString("key", token);
+  prefsApi.putInt("id", stationId);
+
+  prefsWifi.end();
+  prefsApi.end();
+
+  // 🔹 Mise à jour runtime API (IMPORTANT)
+  API_URL = api_url + "/stationdirect/" + String(stationId);
+  API_URL_ETATSTATION = api_url + "/etatstationmeteo/1";
+
+  // --- NTP/TZ ---
+  if (server.hasArg("ntp_server")) {
+    g_ntp_server = server.arg("ntp_server");
+  }
+
+  if (server.hasArg("timezone")) {
+    g_timezone = server.arg("timezone");
+  }
+
+  applyTimeConfig(g_timezone, g_ntp_server);
+  saveNtpTzToNvs();
+
+  // 🔹 reconnect WiFi si changement
+  WiFi.disconnect(true, true);
+  delay(300);
+  WiFi.begin(ssid.c_str(), pass.c_str());
+
+  Serial.println("✅ Configuration sauvegardée (NVS)");
+
+  server.send(200, "application/json", "{\"ok\":true}");
 });
 
 
@@ -2013,11 +2206,11 @@ server.on("/adc/live", HTTP_GET, []() {
 
 server.on("/adc.html", HTTP_GET, []() {
   const char* path = "/adc.html";
-  if (!SPIFFS.exists(path)) {
+  if (!LittleFS.exists(path)) {
     server.send(404, "text/plain", "adc.html introuvable");
     return;
   }
-  File f = SPIFFS.open(path, "r");
+  File f = LittleFS.open(path, "r");
   server.sendHeader("Cache-Control", "no-store"); // éviter cache pendant tests
   server.streamFile(f, "text/html");
   f.close();
@@ -2098,7 +2291,7 @@ server.on("/log/tail", HTTP_GET,  []() {
 server.on("/logs/list", HTTP_GET, []() {
   String out = "[";
   bool first = true;
-  File root = SPIFFS.open("/");
+  File root = LittleFS.open("/");
   while (true) {
     File f = root.openNextFile();
     if (!f) break;
@@ -2122,7 +2315,7 @@ server.on("/logs/get", HTTP_GET, []() {
   if (!server.hasArg("file")) { server.send(400, "text/plain", "file param missing"); return; }
   String file = server.arg("file");
   if (!file.startsWith("/")) file = "/" + file;
-  if (!SPIFFS.exists(file)) { server.send(404, "text/plain", "not found"); return; }
+  if (!LittleFS.exists(file)) { server.send(404, "text/plain", "not found"); return; }
   String content;
   if (!log_read_file(file.c_str(), content, 0)) { server.send(500, "text/plain", "read error"); return; }
   server.send(200, "text/plain; charset=utf-8", content);
@@ -2207,6 +2400,7 @@ server.on("/records/reset", HTTP_POST, []() {
     GUST_maxDay = 0.0f; GUST_dirDay = -1;
   }
   if (scope == "all" || scope == "both") {
+    Preferences prefs; 
     // Efface les records all‑time en NVS
     prefs.begin("records", /*rw=*/false);
     prefs.clear();
@@ -2337,7 +2531,7 @@ server.on("/diag/power", HTTP_GET, []() {
 
 // ---- ArduinoOTA (single OTA method) ----
 extern TaskHandle_t stationInfoTaskHandle;
-extern SemaphoreHandle_t g_dbMutex;
+//extern SemaphoreHandle_t g_dbMutex;
 extern void isrAnemo(); // si tu utilises une ISR
 extern void isrPluvio();
 
@@ -2355,23 +2549,13 @@ ArduinoOTA.onStart([]() {
 
   if (stationInfoTaskHandle) vTaskSuspend(stationInfoTaskHandle);
 
-  // Fermer DB sans conserver le mutex longtemps
-  if (g_dbMutex && xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-    db_end();
-    xSemaphoreGive(g_dbMutex);
-  } else {
-    Serial.println("DB mutex busy — skip db_end()");
-    app_logf("[ArduinoOTA] DB mutex busy — skip db_end()");
-  }
-
-  // ⚠️ SPIFFS.end() à éviter si le WebServer sert des fichiers
 });
-
 
 ArduinoOTA.onEnd( []() {
   Serial.println("ArduinoOTA end — restoring...");
   app_logf("[ArduinoOTA] end — restoring...");
   // 1) Remonter DB (mutex pris seulement si nécessaire/possible)
+  /*
   if (g_dbMutex && xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
     if (!db_begin()) Serial.println("DB reopen failed");
     xSemaphoreGive(g_dbMutex);
@@ -2379,7 +2563,7 @@ ArduinoOTA.onEnd( []() {
     Serial.println("DB mutex busy — deferred db_begin()");
     app_logf("[ArduinoOTA] DB mutex busy — deferred db_begin()");
   }
-
+  */
   // 2) SPIFFS reste monté; si tu l'avais démonté, remonte ici.
   // if (!SPIFFS.begin(true)) Serial.println("SPIFFS remount failed");
 
@@ -2411,24 +2595,22 @@ ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
 
 
 ArduinoOTA.onError([](ota_error_t error) {
+
   Serial.printf("ArduinoOTA Error[%u]\n", error);
   app_logf("ArduinoOTA Error[%u]\n", error);
 
-  otaInProgress = false; // ✅ pour permettre la remise en état
+  otaInProgress = false; // ✅ autorise reprise
 
-  if (g_dbMutex && xSemaphoreTake(g_dbMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-    if (!db_begin()) Serial.println("DB reopen failed");
-    xSemaphoreGive(g_dbMutex);
-  }
+  // ✅ Pas de DB → rien à rouvrir
 
   anemo_init(18, 0.6667f, 0.0f, 1, 2000, 100.0f);
   initPluviometre();
+
   if (stationInfoTaskHandle) vTaskResume(stationInfoTaskHandle);
 });
 
 
-
-  File root = SPIFFS.open("/");
+  File root = LittleFS.open("/");
   File file = root.openNextFile();
   while (file) {
     Serial.println(file.name());
@@ -2465,9 +2647,9 @@ ArduinoOTA.onError([](ota_error_t error) {
 
 
   // Afficher l’état SPIFFS au boot
-  app_logf("[SPIFFS] total=%u used=%u free=%u",
-    (unsigned)SPIFFS.totalBytes(), (unsigned)SPIFFS.usedBytes(),
-    (unsigned)(SPIFFS.totalBytes()-SPIFFS.usedBytes()));
+  app_logf("[LittleFS] total=%u used=%u free=%u",
+    (unsigned)LittleFS.totalBytes(), (unsigned)LittleFS.usedBytes(),
+    (unsigned)(LittleFS.totalBytes()-LittleFS.usedBytes()));
 
 
 }
@@ -2503,7 +2685,7 @@ void loop() {
     
     // Reconnexion STA non bloquante si déconnecté
     if (!g_staConnected && (long)(millis() - g_nextReconnectMs) >= 0) {
-      startStaFromDB();                    // relance depuis DB (SSID/MdP)
+      startStaFromNVS();                    
       g_nextReconnectMs = millis() + g_backoffMs;
     }
 
@@ -2524,17 +2706,20 @@ void loop() {
     // Reset journalier à minuit (s'appuie sur lastDaySeen)
     resetDailyStatsAtMidnightIfNeeded(now);
 
-
+    /*    
     if (millis() - tDbHealth >= 10000) {       // toutes les 5 s
       if (!otaInProgress) {
-        db_reopen_if_needed("/spiffs/station.db");                // réouvre seulement si nécessaire
+          if (!pushBusy) {
+              db_reopen_if_needed("/station.db");
+          }
+                    // réouvre seulement si nécessaire
       } else {
         Serial.println("OTA in progress — skipping db_reopen_if_needed");
         app_logf("OTA in progress — skipping db_reopen_if_needed");
       }
       tDbHealth = millis();
     }
-
+    */
     
     // ----- 1) Historique vent pour moyenne 10 min -----
     if (millis() - t_lastWindPush >= 1000) { // on pousse 1 échantillon par seconde
@@ -2663,6 +2848,9 @@ void loop() {
       }
 
       if (bmp_ok && saneBMP(temp1, pression)) {
+        if (bmpBadStreak != 0) {
+          app_logf("[BMP280] Lecture redevenue valide après %u erreurs", bmpBadStreak);
+        }
         bmpBadStreak = 0;
         etat_bmp280 = BMP_OK;
 
@@ -2680,8 +2868,10 @@ void loop() {
         g_snap.temp_bmp = NAN;
         g_snap.press_hPa = NAN;
 
-        app_logf("[BMP280] Lecture invalide t=%.2fC p=%.2fhPa (streak=%u) — ignore",
-                temp1, pression, bmpBadStreak);
+        if (bmpBadStreak == 1) {
+          app_logf("[BMP280] Lecture invalide t=%.2fC p=%.2fhPa (streak=%u) — ignore",
+                  temp1, pression, bmpBadStreak);
+        }
 
         if (bmpBadStreak >= 2) {
           etat_bmp280 = BMP_RESETTING;
@@ -2730,8 +2920,10 @@ void loop() {
     if (module_sht40 == 1) {
       float tS = getSHT40Temperature();
       float hS = getSHT40Humidity();
-      if (tS == -999.0 || hS == -999.0) Serial.println("Erreur lecture SHT40");
-      app_logf("[SHT40]Erreur lecture SHT40");
+      if (tS == -999.0 || hS == -999.0) {
+        Serial.println("Erreur lecture SHT40");
+        app_logf("[SHT40] Erreur lecture SHT40");
+      }
     }
 
     // Tensions
@@ -2877,16 +3069,27 @@ void loop() {
       tCtrSave = millis();
     }
 
-    // Envoi automatique au démarrage si activé
-    if (firstRun && activation_envoi_api == 1 && g_staConnected) {
-      Serial.println("API: envoi automatique au démarrage");
-      log_line("API: envoi automatique au démarrage");
-      pushBusy = true;
-      sendLatestRowToApi();
-      sendLatestEtatStationMeteoToApi();
-      pushBusy = false;
-      firstRun = false;
-    }
+      if (firstRun && activation_envoi_api == 1) {
+
+        if (g_staConnected) {
+
+          log_line("API: envoi automatique au démarrage");
+
+          pushBusy = true;
+
+          sendLatestRowToApi();
+          sendLatestEtatStationMeteoToApi();
+
+          pushBusy = false;
+
+          firstRun = false;
+
+          // ✅ IMPORTANT → replanifier
+          unsigned long now = millis();
+          nextDueRow  = now + ROW_PERIOD_MS;
+          nextDueEtat = now + ETAT_PERIOD_MS;
+        }
+      }
 
  }
 
@@ -2916,27 +3119,51 @@ void loop() {
 
 
 
-  if (activation_envoi_api == 1 && !otaInProgress && !pushBusy) {
-    if (dueRow) {
-      pushBusy = true; sendLatestRowToApi(); pushBusy = false;
-      nextDueRow += ROW_PERIOD_MS;                 // +30 s
-      nextDueRow += (long)random(80, 420);         // petit jitter facultatif
+if (activation_envoi_api == 1 && !otaInProgress && !pushBusy) {
+
+    if (!g_staConnected) {
+        Serial.println("⚠️ WiFi pas prêt -> skip API");
+    } 
+    else {
+
+        pushBusy = true;
+
+        // ✅ station_direct toutes les 30s
+        if ((long)(nowMs - nextDueRow) >= 0) {
+
+            Serial.println("🚀 Envoi station_direct");
+
+            sendLatestRowToApi();
+
+            // ✅ avancer le timer
+            nextDueRow += ROW_PERIOD_MS;
+        }
+
+        // ✅ etat_station toutes les 60s
+        if ((long)(nowMs - nextDueEtat) >= 0) {
+
+            Serial.println("📡 Envoi etat_station");
+
+            sendLatestEtatStationMeteoToApi();
+
+            // ✅ avancer le timer
+            nextDueEtat += ETAT_PERIOD_MS;
+        }
+
+        pushBusy = false;
     }
 
-    if (dueEtat) {
-      pushBusy = true; sendLatestEtatStationMeteoToApi(); pushBusy = false;
-      nextDueEtat += ETAT_PERIOD_MS;               // +60 s (⚠ pas d'offset récurrent)
-      // on ne remet PAS ETAT_OFFSET_MS ici, l’offset n’est appliqué qu’une fois au tout début
-    }
+}
+else if (activation_envoi_api != 1) {
 
-    } else if (activation_envoi_api != 1) {
-      static unsigned long tLastApiOffLog = 0;
-      if (millis() - tLastApiOffLog >= 60000UL) {
+    static unsigned long tLastApiOffLog = 0;
+
+    if (millis() - tLastApiOffLog >= 60000UL) {
         Serial.println(F("Envoi des données à l'API désactivé."));
         log_line("API: Envoi des données à l'API désactivé.");
         tLastApiOffLog = millis();
-      }
     }
+}
 
   log_tick();
       // ---- Watchdog I²C : supervision non agressive ----

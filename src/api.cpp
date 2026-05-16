@@ -9,7 +9,6 @@
 #include <Preferences.h>
 
 #include "api.h"
-#include "db_read.h"     // fallback unique si NVS vide
 #include "log.h"
 #include "version.h"
 #include "bmp280.h"
@@ -158,33 +157,18 @@ static void saveApiConfigToNvs(const String& baseUrl, const String& key, int sta
 }
 
 // Exposée pour que main.cpp puisse aussi y faire appel après /config.api
-void apiRefreshConfigFromDb() {
-  // 1) Essayer NVS d'abord
-  if (loadApiConfigFromNvs()) return;
+void apiRefreshConfig() {
 
-  // 2) Fallback: lire la DB une seule fois pour ensemencer la NVS
-  AppConfig c;
-  if (!readAppConfig(c)) {
-    Serial.println("[API] readAppConfig() KO");
+  // ✅ Charger depuis NVS uniquement
+  if (!loadApiConfigFromNvs()) {
+    Serial.println("[API] Config NVS absente");
     return;
   }
-  API_KEY    = c.token;
-  STATION_ID = String(c.id_station).toInt();
-  String base = rtrimSlash(c.adresse_api);
-  API_URL = base + "/stationdirect/" + String(STATION_ID);
-  API_URL_ETATSTATION = base + "/etatstationmeteo/1";
-  API_URL_STATION_METEOS = base + "/station_meteos/" + String(STATION_ID);
-  STATION_METEOS_PATH    = "api/station_meteos/" + String(STATION_ID);
 
-  // Enregistrer en NVS pour les boots suivants
-  saveApiConfigToNvs(base, API_KEY, STATION_ID);
-
-  Serial.printf("[API] base='%s'\n", base.c_str());
   Serial.printf("[API] stationdirect='%s'\n", API_URL.c_str());
   Serial.printf("[API] etatstation='%s'\n", API_URL_ETATSTATION.c_str());
   Serial.printf("[API] station_meteos='%s'\n", API_URL_STATION_METEOS.c_str());
 }
-
 
 // ---------- Mise à jour Wi‑Fi locale ----------
 static void updateWifiInfo() {
@@ -432,21 +416,24 @@ bool fetchStationInfoFromRemote() {
 bool sendLatestRowToApi() {
   if (API_URL.isEmpty()) {
     recordPushResult(g_lastPushRow, "cfg", -10, "No API config");
+    app_logf("[API] stationdirect skipped: no API config");
     return false;
   }
   if (WiFi.status() != WL_CONNECTED) {
     recordPushResult(g_lastPushRow, API_URL.c_str(), -2, "No WiFi");
+    app_logf("[API] stationdirect skipped: WiFi status=%d", WiFi.status());
     return false;
   }
 
   String payload = buildStationJsonPayloadStrict();
-  Serial.printf("[API] stationdirect PUT len=%u\n", (unsigned)payload.length());
-  app_logf("[API] stationdirect PUT len=%u\n", (unsigned)payload.length());
+  app_logf("[API] stationdirect send start len=%u", (unsigned)payload.length());
+  app_logf("[API] stationdirect heap before TLS=%u", ESP.getFreeHeap());
 
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
   if (!http.begin(client, API_URL)) {
     recordPushResult(g_lastPushRow, API_URL.c_str(), -1, "http.begin() failed");
+    app_logf("[API] stationdirect http.begin() failed");
     return false;
   }
 
@@ -466,9 +453,12 @@ bool sendLatestRowToApi() {
   g_lastPushHttpBody  = resp;
   g_lastPushMillis    = millis();
 
-  Serial.printf("[API] stationdirect -> code=%d\n", code);
-  app_logf("[API] stationdirect -> code=%d\n", code);
-  if (resp.length()) app_logf("%s", resp.c_str());
+  if (code < 0) {
+    app_logf("[API] stationdirect PUT failed code=%d", code);
+  } else {
+    app_logf("[API] stationdirect PUT -> code=%d", code);
+  }
+  if (resp.length()) app_logf("[API] stationdirect response: %s", resp.c_str());
 
   return (code >= 200 && code < 300);
 }
@@ -550,10 +540,14 @@ bool sendLatestEtatStationMeteoToApi() {
 
   String payload; serializeJson(doc, payload);
 
+  app_logf("[API] etatstation send start len=%u", (unsigned)payload.length());
+  app_logf("[API] etatstation heap before TLS=%u", ESP.getFreeHeap());
+
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
   if (!http.begin(client, API_URL_ETATSTATION)) {
     recordPushResult(g_lastPushEtat, API_URL_ETATSTATION.c_str(), -1, "http.begin() failed");
+    app_logf("[API] etatstation http.begin() failed");
     return false;
   }
 
@@ -572,9 +566,12 @@ bool sendLatestEtatStationMeteoToApi() {
   g_lastPushHttpBody = resp;
   g_lastPushMillis   = millis();
 
-  Serial.printf("[API] PUT %s -> code %d\n", API_URL_ETATSTATION.c_str(), code);
-  app_logf("[API] PUT %s -> code %d\n", API_URL_ETATSTATION.c_str(), code);
-  if (resp.length()) app_logf("%s", resp.c_str());
+  if (code < 0) {
+    app_logf("[API] etatstation PUT failed code=%d", code);
+  } else {
+    app_logf("[API] etatstation PUT -> code=%d", code);
+  }
+  if (resp.length()) app_logf("[API] etatstation response: %s", resp.c_str());
 
   return (code >= 200 && code < 300);
 }

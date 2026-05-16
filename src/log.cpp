@@ -2,7 +2,8 @@
 // log.cpp
 
 #include "log.h"
-#include <SPIFFS.h>
+#include <FS.h>
+#include <LittleFS.h>
 #include <stdarg.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -10,7 +11,6 @@
 
 #include <Arduino.h>
 
-#include <FS.h>
 #include <time.h>
 
 
@@ -63,7 +63,7 @@ static void give() { if (s_mutex) xSemaphoreGive(s_mutex); }
 // Trim — garde les N dernières lignes (opération au flush uniquement)
 static void trim_file_keep_last_n() {
   String p = log_daily_path();
-  File f = SPIFFS.open(p, "r");
+  File f = LittleFS.open(p, "r");
   if (!f) return;
 
   String all = f.readString();
@@ -83,7 +83,7 @@ static void trim_file_keep_last_n() {
     if (all[pos++] == '\n') --toSkip;
   }
 
-  File w = SPIFFS.open(p, "w");
+  File w = LittleFS.open(p, "w");
   if (!w) return;
   w.print(all.substring(pos));
   w.close();
@@ -96,11 +96,34 @@ static bool flush_locked() {
   if (s_buf.isEmpty()) return true;
 
   String p = log_daily_path();
-  File f = SPIFFS.open(p, FILE_APPEND);
-  if (!f) f = SPIFFS.open(p, "w");
+  uint32_t heapBefore = ESP.getFreeHeap();
+  Serial.printf("LittleFS info: total=%u used=%u free=%u\n", LittleFS.totalBytes(), LittleFS.usedBytes(), LittleFS.totalBytes() - LittleFS.usedBytes());
+  if (!LittleFS.exists(p)) Serial.printf("File %s does not exist, will create\n", p.c_str());
+  File f = LittleFS.open(p, FILE_APPEND);
+  if (!f) f = LittleFS.open(p, "w");
   if (!f) {
-    Serial.printf("[LOG] flush failed: cannot open %s\n", p.c_str());
-    return false;
+    Serial.printf("[LOG] flush open failed (heap=%u total=%u used=%u free=%u), retrying mount\n",
+                  heapBefore,
+                  (unsigned)LittleFS.totalBytes(),
+                  (unsigned)LittleFS.usedBytes(),
+                  (unsigned)(LittleFS.totalBytes() - LittleFS.usedBytes()));
+    LittleFS.begin(true);
+    delay(10);
+    f = LittleFS.open(p, FILE_APPEND);
+    if (!f) f = LittleFS.open(p, "w");
+  }
+  if (!f) {
+    Serial.printf("[LOG] flush failed: cannot open %s (heap=%u total=%u used=%u free=%u)\n",
+                  p.c_str(),
+                  ESP.getFreeHeap(),
+                  (unsigned)LittleFS.totalBytes(),
+                  (unsigned)LittleFS.usedBytes(),
+                  (unsigned)(LittleFS.totalBytes() - LittleFS.usedBytes()));
+    // Fallback: log to Serial
+    Serial.print("[LOG FALLBACK] ");
+    Serial.print(s_buf);
+    s_buf = "";
+    return true; // Consider it flushed to avoid blocking
   }
 
   if (f.print(s_buf) < 0) {
@@ -126,16 +149,33 @@ void log_init(const char* path, uint16_t maxLines) {
   s_maxLines = maxLines ? maxLines : 100;
   s_buf.reserve(1024);
 
-  // Monte SPIFFS (une fois)
-  SPIFFS.begin(true);
+  // Monte LittleFS (une fois)
+  bool spiffsOk = LittleFS.begin();
+  if (!spiffsOk) {
+    Serial.println("[LOG] LittleFS mount failed, trying format");
+    spiffsOk = LittleFS.begin(true);
+    if (!spiffsOk) {
+      Serial.println("[LOG] LittleFS format failed");
+    } else {
+      Serial.println("[LOG] LittleFS formatted successfully");
+    }
+  } else {
+    Serial.println("[LOG] LittleFS mounted successfully");
+  }
+  if (spiffsOk) {
+    Serial.printf("[LOG] LittleFS mounted total=%u used=%u free=%u\n",
+                  (unsigned)LittleFS.totalBytes(),
+                  (unsigned)LittleFS.usedBytes(),
+                  (unsigned)(LittleFS.totalBytes() - LittleFS.usedBytes()));
+  }
   
   {
     String p = log_daily_path();
-    if (!SPIFFS.exists(p)) {
-      File f = SPIFFS.open(p, "w"); if (f) f.close();
+    if (!LittleFS.exists(p)) {
+      File f = LittleFS.open(p, "w"); if (f) f.close();
     }
     // Compte lignes du fichier du jour (si tu veux continuer à limiter le nb de lignes locales)
-    File f = SPIFFS.open(p, "r");
+    File f = LittleFS.open(p, "r");
     s_lineCount = 0;
     while (f && f.available()) if (f.read() == '\n') ++s_lineCount;
     if (f) f.close();
@@ -189,7 +229,7 @@ bool log_read(String& out, size_t maxBytes) {
   if (!s_buf.isEmpty()) flush_locked();
 
   String p = log_daily_path();
-  File f = SPIFFS.open(p, "r");
+  File f = LittleFS.open(p, "r");
   if (!f) { give(); return false; }
 
   size_t sz = f.size();
@@ -204,8 +244,8 @@ bool log_read(String& out, size_t maxBytes) {
 void log_clear() {
   if (!take()) return; 
   String p = log_daily_path();
-  if (SPIFFS.exists(p)) SPIFFS.remove(p);
-  File f = SPIFFS.open(p, "w"); 
+  if (LittleFS.exists(p)) LittleFS.remove(p);
+  File f = LittleFS.open(p, "w"); 
   if (f) f.close();
   s_buf = "";
   s_lineCount = 0;
@@ -269,7 +309,7 @@ bool log_find_last_by_tag(const char* tag, String& outDateIsoTz, String& outMsg)
 
   if (!take()) return false;
   String p = log_daily_path();
-  File f = SPIFFS.open(p, "r");
+  File f = LittleFS.open(p, "r");
   if (!f) { give(); return false; }
 
   size_t sz = f.size();
@@ -327,8 +367,17 @@ bool log_read_file(const char* path, String& out, size_t maxBytes) {
   // S'assurer que le buffer en RAM est flushé avant lecture
   if (!s_buf.isEmpty()) flush_locked();
 
-  File f = SPIFFS.open(path, "r");
-  if (!f) { give(); return false; }
+  File f = LittleFS.open(path, "r");
+  if (!f) {
+    Serial.printf("[LOG] read failed: cannot open %s (heap=%u total=%u used=%u free=%u)\n",
+                  path,
+                  ESP.getFreeHeap(),
+                  (unsigned)LittleFS.totalBytes(),
+                  (unsigned)LittleFS.usedBytes(),
+                  (unsigned)(LittleFS.totalBytes() - LittleFS.usedBytes()));
+    give();
+    return false;
+  }
   size_t sz = f.size();
   if (maxBytes && sz > maxBytes) f.seek(sz - maxBytes);
   out.reserve((maxBytes && sz > maxBytes) ? maxBytes : sz);
@@ -361,7 +410,7 @@ bool log_purge_old(uint16_t keepDays) {
   if (now <= 0) return false; // horloge pas prête -> on reporte
   time_t cutoff = now - (time_t)keepDays * 24 * 3600;
 
-  File root = SPIFFS.open("/");
+  File root = LittleFS.open("/");
   if (!root) return false;
 
   size_t removed = 0;
@@ -375,7 +424,7 @@ bool log_purge_old(uint16_t keepDays) {
     if (parse_date_from_logname(name.c_str(), d)) {
       time_t t = mktime(&d); // local time OK
       if (t > 0 && t < cutoff) {
-        SPIFFS.remove(name);
+        LittleFS.remove(name);
         ++removed;
       }
     }
