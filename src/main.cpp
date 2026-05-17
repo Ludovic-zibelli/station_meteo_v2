@@ -1621,8 +1621,7 @@ if (!haveNvs) {
   // Réactivation de l'envoi API au démarrage en fonction de la config NVS
   Serial.printf("activation_envoi_api initialisé à: %d\n", activation_envoi_api);
   // Temporairement désactiver l'envoi API pour éviter les blocages du serveur web
-  activation_envoi_api = 0;
-  Serial.printf("activation_envoi_api forcé à 0 pour stabiliser le serveur web\n");
+
 }
 
 loadOffsetsFromNvs();
@@ -3069,11 +3068,15 @@ void loop() {
       tCtrSave = millis();
     }
 
-      if (firstRun && activation_envoi_api == 1) {
+    if (firstRun && activation_envoi_api == 1) {
 
-        if (g_staConnected) {
+        if (!g_staConnected) {
+          // on attend juste le WiFi
+          Serial.println("⏳ Attente WiFi pour envoi initial...");
+        } 
+        else {
 
-          log_line("API: envoi automatique au démarrage");
+          Serial.println("🚀 Envoi API au démarrage");
 
           pushBusy = true;
 
@@ -3084,10 +3087,10 @@ void loop() {
 
           firstRun = false;
 
-          // ✅ IMPORTANT → replanifier
-          unsigned long now = millis();
-          nextDueRow  = now + ROW_PERIOD_MS;
-          nextDueEtat = now + ETAT_PERIOD_MS;
+          // ✅ IMPORTANT : replanifier le cycle
+          unsigned long nowMs = millis();
+          nextDueRow  = nowMs + ROW_PERIOD_MS;
+          nextDueEtat = nowMs + ETAT_PERIOD_MS;
         }
       }
 
