@@ -348,6 +348,10 @@ constexpr unsigned long ETAT_OFFSET_MS = 5000;    // décalage 5 s
 static unsigned long nextUpdateMs = 0;
 constexpr unsigned long UPDATE_PERIOD_MS = 30000;
 
+//Timer de demarrage api
+unsigned long apiStartDelayMs = 30000;  // 30 secondes
+unsigned long bootTimeMs = 0;
+
 // Helpers wrap-safe
 static inline bool timeReached(unsigned long now, unsigned long dueAt) {
   return (long)(now - dueAt) >= 0; // wrap-safe
@@ -1363,6 +1367,7 @@ void setup() {
 
   //Connection au wifi 
 
+  bootTimeMs = millis();
   
   Preferences prefs;
   prefs.begin("wifi", false);
@@ -2705,21 +2710,6 @@ void loop() {
     // Reset journalier à minuit (s'appuie sur lastDaySeen)
     resetDailyStatsAtMidnightIfNeeded(now);
 
-    /*    
-    if (millis() - tDbHealth >= 10000) {       // toutes les 5 s
-      if (!otaInProgress) {
-          if (!pushBusy) {
-              db_reopen_if_needed("/station.db");
-          }
-                    // réouvre seulement si nécessaire
-      } else {
-        Serial.println("OTA in progress — skipping db_reopen_if_needed");
-        app_logf("OTA in progress — skipping db_reopen_if_needed");
-      }
-      tDbHealth = millis();
-    }
-    */
-    
     // ----- 1) Historique vent pour moyenne 10 min -----
     if (millis() - t_lastWindPush >= 1000) { // on pousse 1 échantillon par seconde
       t_lastWindPush = millis();
@@ -3068,31 +3058,31 @@ void loop() {
       tCtrSave = millis();
     }
 
-    if (firstRun && activation_envoi_api == 1) {
+    if (firstRun && activation_envoi_api == 1
+        && (millis() - bootTimeMs > apiStartDelayMs)) {
 
         if (!g_staConnected) {
-          // on attend juste le WiFi
-          Serial.println("⏳ Attente WiFi pour envoi initial...");
+            Serial.println("⏳ Attente WiFi pour envoi initial...");
         } 
         else {
 
-          Serial.println("🚀 Envoi API au démarrage");
+            Serial.println("🚀 Envoi API au démarrage (après délai)");
 
-          pushBusy = true;
+            pushBusy = true;
 
-          sendLatestRowToApi();
-          sendLatestEtatStationMeteoToApi();
+            sendLatestRowToApi();
+            sendLatestEtatStationMeteoToApi();
 
-          pushBusy = false;
+            pushBusy = false;
 
-          firstRun = false;
+            firstRun = false;
 
-          // ✅ IMPORTANT : replanifier le cycle
-          unsigned long nowMs = millis();
-          nextDueRow  = nowMs + ROW_PERIOD_MS;
-          nextDueEtat = nowMs + ETAT_PERIOD_MS;
+            unsigned long nowMs = millis();
+            nextDueRow  = nowMs + ROW_PERIOD_MS;
+            nextDueEtat = nowMs + ETAT_PERIOD_MS;
         }
-      }
+    }
+
 
  }
 
@@ -3122,7 +3112,9 @@ void loop() {
 
 
 
-if (activation_envoi_api == 1 && !otaInProgress && !pushBusy) {
+
+if (activation_envoi_api == 1 && !otaInProgress && !pushBusy && (millis() - bootTimeMs > apiStartDelayMs))
+{
 
     if (!g_staConnected) {
         Serial.println("⚠️ WiFi pas prêt -> skip API");
@@ -3154,6 +3146,7 @@ if (activation_envoi_api == 1 && !otaInProgress && !pushBusy) {
         }
 
         pushBusy = false;
+        yield(); 
     }
 
 }
