@@ -352,6 +352,10 @@ constexpr unsigned long UPDATE_PERIOD_MS = 30000;
 unsigned long apiStartDelayMs = 30000;  // 30 secondes
 unsigned long bootTimeMs = 0;
 
+//Timer pour redémarrage de l'esp
+unsigned long rebootIntervalMs = 6UL * 60UL * 60UL * 1000UL; // 6 heures
+
+
 // Helpers wrap-safe
 static inline bool timeReached(unsigned long now, unsigned long dueAt) {
   return (long)(now - dueAt) >= 0; // wrap-safe
@@ -1201,6 +1205,18 @@ void handleStatusJson() {
   ui["wifi_percent"]= pct;
   ui["wifi_bars"]   = bars;
 
+  Preferences prefsBoot;
+  prefsBoot.begin("boot", true);
+
+  uint32_t bootCount = prefsBoot.getUInt("count", 0);
+
+  prefsBoot.end();
+
+  j["boot_count"] = bootCount;
+
+  uint32_t reason = prefsBoot.getUInt("last_reason", 0);
+  j["reset_reason"] = reason;
+
   String out;
   serializeJson(j, out);
 
@@ -1346,7 +1362,9 @@ void debugListFiles() {
     Serial.println("------------------------");
 }
 
-
+//Watchdog global 
+unsigned long lastApiActivity = 0;
+const unsigned long watchdogTimeout = 60000; // 60 secondes
 
 void setup() {
  
@@ -1368,6 +1386,7 @@ void setup() {
   //Connection au wifi 
 
   bootTimeMs = millis();
+ 
   
   Preferences prefs;
   prefs.begin("wifi", false);
@@ -1607,6 +1626,19 @@ if (!haveNvs) {
   saveModulesToNvs(bootMods, apiActive);
 }
 
+Preferences prefsBoot;
+prefsBoot.begin("boot", false);
+
+uint32_t bootCount = prefsBoot.getUInt("count", 0);
+bootCount++;
+
+prefsBoot.putUInt("count", bootCount);
+prefsBoot.putUInt("last_reason", esp_reset_reason());
+
+prefsBoot.end();
+
+Serial.printf("🔄 Boot #%u | reason=%d\n", bootCount, esp_reset_reason());
+lastApiActivity = millis();
 
   // Appliquer la config au runtime
   applyModuleChange(mods, bootMods);
@@ -2511,6 +2543,7 @@ server.on("/i2c/wd", HTTP_POST, []() {
   server.send(200, "application/json", out);
 });
 
+
 server.on("/diag/power", HTTP_GET, []() {
     String json = "{";
 
@@ -2661,16 +2694,21 @@ ArduinoOTA.onError([](ota_error_t error) {
 
 
 void loop() {
+
     static unsigned long previousTime = 0;  // Temps du dernier traitement
     unsigned long currentTime = millis();  // Temps actuel
     static unsigned long tDbHealth = 0;    // Ajout de la déclaration de tDbHealth
     //static unsigned long tPollMods = 0;    // Déclaration de tPollMods
 
-    // Gestion des requêtes OTA via ElegantOTA (handled by webserver)
-    // ElegantOTA tourne dans les callbacks du serveur HTTP, pas besoin d'handle() ici.
+    //Fonction de redémarrage auto toute les 6H
+    if (millis() - bootTimeMs > rebootIntervalMs) {
 
-    // Gestion des requêtes du serveur web
-    
+          Serial.println("🔄 Redémarrage automatique (sécurité)");
+
+          delay(1000);   // laisse le temps d’écrire les logs
+
+          ESP.restart();
+    }
     // Exemple dans loop():
     server.handleClient();      // OK
     ArduinoOTA.handle();        // doit rester réactif
@@ -3070,7 +3108,12 @@ void loop() {
 
             pushBusy = true;
 
-            sendLatestRowToApi();
+            //sendLatestRowToApi();
+            
+            if (sendLatestRowToApi()) {
+                lastApiActivity = millis();
+            }
+
             sendLatestEtatStationMeteoToApi();
 
             pushBusy = false;
@@ -3147,6 +3190,7 @@ if (activation_envoi_api == 1 && !otaInProgress && !pushBusy && (millis() - boot
 
         pushBusy = false;
         yield(); 
+        delay(1); // petite pause coopérative après l'envoi
     }
 
 }
@@ -3198,6 +3242,17 @@ else if (activation_envoi_api != 1) {
     }
   }
 }
+  
+// ✅ WATCHDOG API
+  if (millis() - lastApiActivity > watchdogTimeout) {
+
+      Serial.println("💥 Watchdog API -> reboot");
+
+      delay(500);
+
+      ESP.restart();
+  }
+
   delay(100);
 }
 

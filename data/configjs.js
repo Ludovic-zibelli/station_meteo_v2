@@ -67,6 +67,9 @@ async function loadConfig() {
     if ($('rain_enabled'))     $('rain_enabled').checked   = !!st.modules?.rain;
     if ($('tension_enabled'))  $('tension_enabled').checked= !!st.modules?.tension;
     if ($('bitvie_enabled'))   $('bitvie_enabled').checked = !!st.modules?.bitvie;
+    if (st.boot_count !== undefined) {setText('boot_count', st.boot_count);}
+    if (st.reset_reason !== undefined) {setText('reset_reason', st.reset_reason);}
+
 
     if ($('ntp_server')) $('ntp_server').value = st.conf?.ntp_server ?? (cfg.ntp_server ?? 'pool.ntp.org');
     if ($('timezone'))   $('timezone').value   = st.conf?.timezone   ?? (cfg.timezone   ?? 'Europe/Paris');
