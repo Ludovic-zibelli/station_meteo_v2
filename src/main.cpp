@@ -1117,7 +1117,7 @@ void handleStatusJson() {
 
   String api_url = prefsApi.getString("base", "");
   String token   = prefsApi.getString("key", "");
-  int stationId  = prefsApi.getInt("id", 1);
+  int stationId  = 2;
 
   prefsApi.end();
 
@@ -1411,6 +1411,7 @@ void setup() {
     return;
   }
 
+
   debugListFiles();
 
   
@@ -1422,6 +1423,25 @@ void setup() {
   Serial.printf("[CTR] compteur (boot) = %lu\n", (unsigned long)compteur);
 
   // première ligne
+
+  File rootLogs = LittleFS.open("/");
+
+while (true)
+{
+    File f = rootLogs.openNextFile();
+
+    if (!f)
+        break;
+
+    String name = f.name();
+    f.close();
+
+    if (name.startsWith("/log-"))
+    {
+        Serial.printf("Suppression : %s\n", name.c_str());
+        LittleFS.remove(name);
+    }
+}
 
   unsigned long nowMs = millis();
   // ⚡ Première mise à jour immédiatement au démarrage
@@ -1456,7 +1476,14 @@ void setup() {
 
 
   apiRefreshConfig();  // charge API_URL, API_KEY, STATION_ID, etc.
+  Preferences p;
+  p.begin("api", false);
 
+  p.putUChar("ver", 1);
+
+  p.end();
+
+  Serial.println("FORCE VER=1");
  
   Wire.begin();
   
@@ -1620,7 +1647,7 @@ if (!haveNvs) {
     /*bitvie*/1
   };
 
-  apiActive = 0;
+  apiActive = 1;
 
   // sauvegarde en NVS
   saveModulesToNvs(bootMods, apiActive);
@@ -1928,7 +1955,7 @@ server.on("/config/api", HTTP_POST, []() {
 
   String base = prefs.getString("base", "");
   String token = prefs.getString("key", "");
-  int stationId = prefs.getInt("id", 1);
+  int stationId = prefs.getInt("id", 2);
 
   // 🔹 Mise à jour depuis formulaire
   if (server.hasArg("api_url")) {
@@ -1937,6 +1964,11 @@ server.on("/config/api", HTTP_POST, []() {
 
   if (server.hasArg("api_token")) {
     token = server.arg("api_token");
+  }
+
+  if (server.hasArg("api_station_id")) {
+    stationId = server.arg("api_station_id").toInt();
+    if (stationId <= 0) stationId = 2;
   }
 
   // 🔹 Activation API (RAM uniquement)
@@ -1956,6 +1988,7 @@ server.on("/config/api", HTTP_POST, []() {
   prefs.putString("base", base);
   prefs.putString("key", token);
   prefs.putInt("id", stationId);
+  prefs.putUChar("ver", 1); 
 
   prefs.end();
 
@@ -2108,7 +2141,7 @@ server.on("/config.json", HTTP_GET,  [] () {
 
   String api_url = prefsApi.getString("base", "");
   String token   = prefsApi.getString("key", "");
-  int stationId  = prefsApi.getInt("id", 1);
+  int stationId  = prefsApi.getInt("id", 2);
 
   prefsApi.end();
 
@@ -2152,7 +2185,7 @@ server.on("/config.save", HTTP_POST, [] () {
 
   String api_url = prefsApi.getString("base", "");
   String token   = prefsApi.getString("key", "");
-  int stationId  = prefsApi.getInt("id", 1);
+  int stationId  = prefsApi.getInt("id", 2);
 
   // 🔹 récupérer valeurs envoyées
   if (server.hasArg("ssid_wifi")) ssid = server.arg("ssid_wifi");
@@ -2167,6 +2200,7 @@ server.on("/config.save", HTTP_POST, [] () {
 
   if (server.hasArg("ID_STATION")) {
     stationId = server.arg("ID_STATION").toInt();
+    if (stationId <= 0) stationId = 2;
   }
 
   if (server.hasArg("activation_envoi_api")) {

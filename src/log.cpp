@@ -60,6 +60,34 @@ static bool take(uint32_t ms = 2) {
 }
 static void give() { if (s_mutex) xSemaphoreGive(s_mutex); }
 
+static bool is_littlefs_low_space(size_t reserveBytes = 64 * 1024) {
+  size_t total = LittleFS.totalBytes();
+  if (total == 0) return true;
+  size_t used = LittleFS.usedBytes();
+  return (total - used) < reserveBytes;
+}
+
+static bool purge_emergency_files() {
+  String currentLog = log_daily_path();
+  File root = LittleFS.open("/");
+  if (!root) return false;
+
+  bool removed = false;
+  while (true) {
+    File f = root.openNextFile();
+    if (!f) break;
+    String name = f.name();
+    f.close();
+
+    if (name == "/log.txt" || name == currentLog) continue;
+    if (name.startsWith("/log-") && name.endsWith(".txt")) {
+      if (LittleFS.remove(name)) removed = true;
+    }
+  }
+  root.close();
+  return removed;
+}
+
 // Trim — garde les N dernières lignes (opération au flush uniquement)
 static void trim_file_keep_last_n() {
   String p = log_daily_path();
@@ -99,8 +127,25 @@ static bool flush_locked() {
   uint32_t heapBefore = ESP.getFreeHeap();
   Serial.printf("LittleFS info: total=%u used=%u free=%u\n", LittleFS.totalBytes(), LittleFS.usedBytes(), LittleFS.totalBytes() - LittleFS.usedBytes());
   if (!LittleFS.exists(p)) Serial.printf("File %s does not exist, will create\n", p.c_str());
+
+  if (is_littlefs_low_space()) {
+    Serial.println("[LOG] low LittleFS space, running emergency purge");
+    purge_emergency_files();
+  }
+
   File f = LittleFS.open(p, FILE_APPEND);
   if (!f) f = LittleFS.open(p, "w");
+  if (!f) {
+    Serial.printf("[LOG] flush open failed (heap=%u total=%u used=%u free=%u), trying emergency purge\n",
+                  heapBefore,
+                  (unsigned)LittleFS.totalBytes(),
+                  (unsigned)LittleFS.usedBytes(),
+                  (unsigned)(LittleFS.totalBytes() - LittleFS.usedBytes()));
+    purge_emergency_files();
+    delay(10);
+    f = LittleFS.open(p, FILE_APPEND);
+    if (!f) f = LittleFS.open(p, "w");
+  }
   if (!f) {
     Serial.printf("[LOG] flush open failed (heap=%u total=%u used=%u free=%u), retrying mount\n",
                   heapBefore,
@@ -167,7 +212,11 @@ void log_init(const char* path, uint16_t maxLines) {
                   (unsigned)LittleFS.totalBytes(),
                   (unsigned)LittleFS.usedBytes(),
                   (unsigned)(LittleFS.totalBytes() - LittleFS.usedBytes()));
+    
   }
+
+  // Purge rapide au démarrage pour libérer de l'espace avant toute écriture
+  log_purge_old(7);
   
   {
     String p = log_daily_path();
@@ -180,9 +229,6 @@ void log_init(const char* path, uint16_t maxLines) {
     while (f && f.available()) if (f.read() == '\n') ++s_lineCount;
     if (f) f.close();
   }
-
-  // Purge des vieux fichiers (> keepDays)
-  log_purge_old(14);
 
   s_lastFlush = millis();
 
@@ -406,28 +452,60 @@ static bool parse_date_from_logname(const char* name, struct tm& out) {
 }
 
 bool log_purge_old(uint16_t keepDays) {
-  time_t now = time(nullptr);
-  if (now <= 0) return false; // horloge pas prête -> on reporte
-  time_t cutoff = now - (time_t)keepDays * 24 * 3600;
-
   File root = LittleFS.open("/");
   if (!root) return false;
 
-  size_t removed = 0;
+  String currentLog = log_daily_path();
+  String newestLog;
+  time_t newestTime = 0;
+
+  time_t now = time(nullptr);
+  bool haveTime = (now > 0);
+  time_t cutoff = haveTime ? now - (time_t)keepDays * 24 * 3600 : 0;
+
   while (true) {
     File f = root.openNextFile();
     if (!f) break;
     String name = f.name();
     f.close();
 
+    if (name == "/log.txt" || name == currentLog) continue;
+
     struct tm d;
     if (parse_date_from_logname(name.c_str(), d)) {
-      time_t t = mktime(&d); // local time OK
-      if (t > 0 && t < cutoff) {
+      time_t t = mktime(&d);
+      if (t > newestTime) {
+        newestTime = t;
+        newestLog = name;
+      }
+      if (haveTime && t > 0 && t < cutoff) {
         LittleFS.remove(name);
-        ++removed;
       }
     }
   }
+  root.close();
+
+  // Si l'heure n'est pas encore disponible, on garde seulement le plus récent
+  // des fichiers datés pour éviter la saturation mémoire au démarrage.
+  if (!haveTime && !newestLog.isEmpty()) {
+    File root2 = LittleFS.open("/");
+    if (root2) {
+      while (true) {
+        File f = root2.openNextFile();
+        if (!f) break;
+        String name = f.name();
+        f.close();
+
+        if (name == "/log.txt" || name == currentLog || name == newestLog) continue;
+
+        struct tm d;
+        if (parse_date_from_logname(name.c_str(), d)) {
+          LittleFS.remove(name);
+        }
+      }
+      root2.close();
+    }
+  }
+
   return true;
 }

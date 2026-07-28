@@ -120,16 +120,33 @@ static String frenchDecimalStr(float v, uint8_t digits = 2) {
 // ---------- Config API en NVS (fallback DB une seule fois) ----------
 static Preferences prefsApi;
 
+static void saveApiConfigToNvs(const String& baseUrl, const String& key, int stationId);
+
+static const char* DEFAULT_API_BASE = "https://www.meteospit.fr/api";
+static const char* DEFAULT_API_KEY  = "2878ece33344e4f6d9e1105c0362f0671d9432fb4d997023acb734f4c6e6793a";
+static const int DEFAULT_STATION_ID = 2;
+
 static bool loadApiConfigFromNvs() {
   prefsApi.begin("api", /*ro=*/true);
-  bool ok = prefsApi.isKey("ver");
-  String base = prefsApi.getString("base", "");
-  API_KEY    = prefsApi.getString("key",  "");
-  STATION_ID = prefsApi.getInt   ("id",   0);
+  bool hasAnyConfig = prefsApi.isKey("ver") || prefsApi.isKey("base") || prefsApi.isKey("key") || prefsApi.isKey("id");
+  String base = prefsApi.getString("base", DEFAULT_API_BASE);
+  String key  = prefsApi.getString("key",  DEFAULT_API_KEY);
+  int stationId = DEFAULT_STATION_ID;
   prefsApi.end();
-  if (!ok || base.isEmpty() || STATION_ID <= 0) return false;
+
+  if (base.isEmpty() || stationId <= 0) {
+    base = DEFAULT_API_BASE;
+    key = DEFAULT_API_KEY;
+    stationId = DEFAULT_STATION_ID;
+  }
+
+  if (!hasAnyConfig || base.isEmpty() || stationId <= 0) {
+    saveApiConfigToNvs(base, key, stationId);
+  }
 
   base = rtrimSlash(base);
+  API_KEY = key;
+  STATION_ID = stationId;
   API_URL = base + "/stationdirect/" + String(STATION_ID);
   API_URL_ETATSTATION = base + "/etatstationmeteo/1";
   API_URL_STATION_METEOS = base + "/station_meteos/" + String(STATION_ID);
@@ -139,6 +156,8 @@ static bool loadApiConfigFromNvs() {
   Serial.printf("[API] stationdirect='%s'\n", API_URL.c_str());
   Serial.printf("[API] etatstation='%s'\n", API_URL_ETATSTATION.c_str());
   Serial.printf("[API] station_meteos='%s'\n", API_URL_STATION_METEOS.c_str());
+  Serial.printf("[API] token='%s'\n", API_KEY.c_str());
+  Serial.printf("[API] stationId=%d\n", STATION_ID);
   return true;
 }
 

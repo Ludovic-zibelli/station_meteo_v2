@@ -54,9 +54,10 @@ async function loadVersionInfo() {
 async function loadConfig() {
   try {
     const cfg = await getJSON('/config.json');   // adresse_api, token, activation_envoi_api, (optionnel ntp_server/timezone)
-    if ($('api_url'))   $('api_url').value   = cfg.adresse_api || '';
-    if ($('api_token')) $('api_token').value = cfg.token || '';
-    if ($('api_enabled')) $('api_enabled').checked = !!cfg.activation_envoi_api;
+    if ($('api_url'))        $('api_url').value        = cfg.adresse_api || '';
+    if ($('api_token'))      $('api_token').value      = cfg.token || '';
+    if ($('api_station_id')) $('api_station_id').value = cfg.ID_STATION || '';
+    if ($('api_enabled'))    $('api_enabled').checked   = !!cfg.activation_envoi_api;
 
     const st = await getJSON('/status.json');    // modules + conf(ntp_server, timezone) + réseau
     if ($('bmp280_enabled'))   $('bmp280_enabled').checked = !!st.modules?.bmp280;
@@ -89,6 +90,7 @@ async function saveApi(e) {
     const payload = {
       api_url: $('api_url')?.value?.trim() ?? '',
       api_token: $('api_token')?.value?.trim() ?? '',
+      api_station_id: $('api_station_id')?.value?.trim() ?? '',
       ...(enabled ? { api_enabled: 'on' } : {}) // présence => activé ; absence => désactivé
     };
     await postForm('/config/api', payload);
